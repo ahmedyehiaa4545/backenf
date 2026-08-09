@@ -15,6 +15,8 @@ from pydantic import BaseModel
 
 app = FastAPI(title="ReKaption API", description="API for transcribing audio and rendering video with captions")
 
+RENDER_TASKS = {}
+
 # Enable CORS for frontend deployment (Netlify)
 app.add_middleware(
     CORSMiddleware,
@@ -1786,10 +1788,68 @@ async def transcribe_cohere_endpoint(
 
 
 
+async def run_render_task(task_id: str, request_data: RenderRequest):
+    public_dir = os.path.abspath("public")
+    task_dir = os.path.join(public_dir, f"temp_{task_id}")
+    
+    try:
+        props_path = os.path.join(task_dir, "captions.json")
+        import json
+        with open(props_path, "w", encoding="utf-8") as f:
+            json.dump(request_data.model_dump(), f, ensure_ascii=False, indent=2)
+            
+        output_video_path = os.path.join(task_dir, "output.mp4")
+        print(f"[{task_id}] Rendering video with user edits (concurrency=8)...")
+        
+        render_cmd = [
+            "npx", "remotion", "render",
+            "src/index.ts",
+            "CaptionsVideo",
+            output_video_path,
+            "--props", props_path,
+            "--concurrency=8",
+            "--jpeg-quality=60",
+            "--log=error",
+            "--browser-args=--no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --disable-extensions --disable-background-timer-throttling --disable-backgrounding-occluded-windows"
+        ]
+        
+        render_env = {**os.environ, "REMOTION_DISABLE_TELEMETRY": "1"}
+        process = await asyncio.create_subprocess_exec(
+            *render_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=render_env
+        )
+        
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=900.0)
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            print(f"[{task_id}] Remotion rendering process timed out after 900 seconds.")
+            RENDER_TASKS[task_id] = {"status": "failed", "error": "استغرقت عملية رندرة الفيديو وقتاً أطول من المتوقع وانتهت مهلة الانتظار."}
+            clean_temp_dir(task_dir)
+            return
+            
+        if process.returncode != 0:
+            err_msg = stderr.decode() if stderr else "Unknown rendering error"
+            print(f"[{task_id}] Render failed with code {process.returncode}: {err_msg}")
+            RENDER_TASKS[task_id] = {"status": "failed", "error": err_msg}
+            clean_temp_dir(task_dir)
+            return
+            
+        print(f"[{task_id}] Render completed successfully!")
+        RENDER_TASKS[task_id] = {"status": "success", "videoUrl": f"api/render-download/{task_id}"}
+    except Exception as e:
+        print(f"[{task_id}] Unexpected render error: {str(e)}")
+        RENDER_TASKS[task_id] = {"status": "failed", "error": str(e)}
+        clean_temp_dir(task_dir)
+
 @app.post("/api/render/{task_id}")
 async def render_video_edited(
     task_id: str,
-    background_tasks: BackgroundTasks,
     request_data: RenderRequest
 ):
     public_dir = os.path.abspath("public")
@@ -1798,54 +1858,33 @@ async def render_video_edited(
     if not os.path.exists(task_dir):
         raise HTTPException(status_code=404, detail="Task workspace not found or expired.")
         
-    props_path = os.path.join(task_dir, "captions.json")
-    import json
-    with open(props_path, "w", encoding="utf-8") as f:
-        json.dump(request_data.model_dump(), f, ensure_ascii=False, indent=2)
-        
+    RENDER_TASKS[task_id] = {"status": "processing"}
+    asyncio.create_task(run_render_task(task_id, request_data))
+    
+    return {"status": "processing", "task_id": task_id}
+
+@app.get("/api/render-status/{task_id}")
+async def get_render_status(task_id: str):
+    if task_id not in RENDER_TASKS:
+        return {"status": "not_found", "error": "المهمة غير موجودة أو انتهت صلاحيتها."}
+    return RENDER_TASKS[task_id]
+
+@app.get("/api/render-download/{task_id}")
+async def download_rendered_video(task_id: str, background_tasks: BackgroundTasks):
+    public_dir = os.path.abspath("public")
+    task_dir = os.path.join(public_dir, f"temp_{task_id}")
     output_video_path = os.path.join(task_dir, "output.mp4")
-    print(f"[{task_id}] Rendering video with user edits...")
     
-    render_cmd = [
-        "npx", "remotion", "render",
-        "src/index.ts",
-        "CaptionsVideo",
-        output_video_path,
-        "--props", props_path,
-        "--concurrency=2",
-        "--jpeg-quality=60",
-        "--log=error",
-        "--browser-args=--no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --disable-extensions --disable-background-timer-throttling --disable-backgrounding-occluded-windows"
-    ]
-    
-    render_env = {**os.environ, "REMOTION_DISABLE_TELEMETRY": "1"}
-    process = await asyncio.create_subprocess_exec(
-        *render_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=render_env
-    )
-    
-    try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=900.0)
-    except asyncio.TimeoutError:
-        try:
-            process.kill()
-        except Exception:
-            pass
-        print(f"[{task_id}] Remotion rendering process timed out after 900 seconds.")
-        raise HTTPException(
-            status_code=504,
-            detail="استغرقت عملية رندرة الفيديو وقتاً أطول من المتوقع وانتهت مهلة الانتظار. يرجى المحاولة مرة أخرى."
-        )
-    
-    if process.returncode != 0:
-        err_msg = stderr.decode() if stderr else "Unknown rendering error"
-        print(f"[{task_id}] Render failed with code {process.returncode}: {err_msg}")
-        raise HTTPException(status_code=500, detail=f"Remotion rendering failed: {err_msg}")
+    if not os.path.exists(output_video_path):
+        raise HTTPException(status_code=404, detail="Video not found")
         
-    print(f"[{task_id}] Render completed successfully!")
     background_tasks.add_task(clean_temp_dir, task_dir)
+    # Also clean up the task state after a delay to avoid memory leak
+    async def remove_task_state():
+        await asyncio.sleep(60)
+        if task_id in RENDER_TASKS:
+            del RENDER_TASKS[task_id]
+    background_tasks.add_task(remove_task_state)
     
     return FileResponse(
         output_video_path,
