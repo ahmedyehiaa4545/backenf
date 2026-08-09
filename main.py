@@ -24,6 +24,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Copy Thmanyah fonts to public/fonts so Remotion staticFile() can find them
+_base_dir = os.path.dirname(os.path.abspath(__file__))
+_fonts_src = os.path.join(_base_dir, "netlify-deploy", "fonts")
+_fonts_dst = os.path.join(_base_dir, "public", "fonts")
+os.makedirs(_fonts_dst, exist_ok=True)
+if os.path.exists(_fonts_src):
+    for _fname in os.listdir(_fonts_src):
+        _src_f = os.path.join(_fonts_src, _fname)
+        _dst_f = os.path.join(_fonts_dst, _fname)
+        if os.path.isfile(_src_f) and not os.path.exists(_dst_f):
+            shutil.copy2(_src_f, _dst_f)
+    print(f"✅ Thmanyah fonts copied to {_fonts_dst}")
+else:
+    print(f"⚠️ fonts source not found: {_fonts_src}")
+
+
 # Global model variable for lazy loading
 whisper_model = None
 
