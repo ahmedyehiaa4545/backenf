@@ -1,0 +1,23 @@
+{
+  "name": "rekaption-backend",
+  "version": "1.0.0",
+  "description": "Arabic video captioning and rendering backend with Remotion and FastAPI for Railway",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "remotion preview src/index.ts",
+    "build": "remotion bundle src/index.ts out/bundle.js",
+    "render": "remotion render src/index.ts CaptionsVideo out.mp4"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.140",
+    "@remotion/google-fonts": "^4.0.140",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "remotion": "^4.0.140"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "typescript": "^5.0.0"
+  }
+}
