@@ -1798,22 +1798,24 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
         with open(props_path, "w", encoding="utf-8") as f:
             json.dump(request_data.model_dump(), f, ensure_ascii=False, indent=2)
             
+        muted_video_path = os.path.join(task_dir, "muted_output.mp4")
         output_video_path = os.path.join(task_dir, "output.mp4")
-        print(f"[{task_id}] Rendering video with user edits (concurrency=8)...")
+        print(f"[{task_id}] Rendering video with user edits (concurrency=8, muted)...")
         
         render_cmd = [
             "npx", "remotion", "render",
             "src/index.ts",
             "CaptionsVideo",
-            output_video_path,
+            muted_video_path,
             "--props", props_path,
             "--concurrency=8",
             "--jpeg-quality=60",
+            "--muted",
             "--log=error",
             "--browser-args=--no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --disable-extensions --disable-background-timer-throttling --disable-backgrounding-occluded-windows"
         ]
         
-        render_env = {**os.environ, "REMOTION_DISABLE_TELEMETRY": "1"}
+        render_env = {**os.environ, "REMOTION_DISABLE_TELEMETRY": "1", "NODE_OPTIONS": "--max-old-space-size=6144"}
         process = await asyncio.create_subprocess_exec(
             *render_cmd,
             stdout=subprocess.PIPE,
@@ -1840,7 +1842,36 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             clean_temp_dir(task_dir)
             return
             
-        print(f"[{task_id}] Render completed successfully!")
+        # Audio multiplexing
+        print(f"[{task_id}] Render completed. Mixing audio back...")
+        audio_abs_path = os.path.join(public_dir, request_data.audioPath)
+        
+        mix_cmd = [
+            "ffmpeg", "-y",
+            "-i", muted_video_path,
+            "-i", audio_abs_path,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-shortest",
+            output_video_path
+        ]
+        
+        mix_process = await asyncio.create_subprocess_exec(
+            *mix_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        mix_stdout, mix_stderr = await mix_process.communicate()
+        
+        if mix_process.returncode != 0:
+            print(f"[{task_id}] FFmpeg mixing failed: {mix_stderr.decode()}")
+            RENDER_TASKS[task_id] = {"status": "failed", "error": "فشل دمج الصوت مع الفيديو."}
+            clean_temp_dir(task_dir)
+            return
+            
+        print(f"[{task_id}] Mix completed successfully!")
         RENDER_TASKS[task_id] = {"status": "success", "videoUrl": f"api/render-download/{task_id}"}
     except Exception as e:
         print(f"[{task_id}] Unexpected render error: {str(e)}")
