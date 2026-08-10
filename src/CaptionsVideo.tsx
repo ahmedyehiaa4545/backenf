@@ -1,4 +1,4 @@
-import { Audio, Video, useCurrentFrame, useVideoConfig, staticFile } from 'remotion';
+import { Audio, OffthreadVideo, useCurrentFrame, useVideoConfig, staticFile } from 'remotion';
 import React from 'react';
 import { loadFont as loadCairo } from '@remotion/google-fonts/Cairo';
 import { loadFont as loadTajawal } from '@remotion/google-fonts/Tajawal';
@@ -492,7 +492,7 @@ export const CaptionsVideo: React.FC<CaptionsData> = ({
       `}</style>
       {/* Background Video (if provided) */}
       {videoPath ? (
-        <Video
+        <OffthreadVideo
           src={staticFile(videoPath)}
           volume={0}
           style={{
