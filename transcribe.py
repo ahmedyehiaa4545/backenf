@@ -66,6 +66,19 @@ def chunk_words(words, min_words=3, max_words=5, max_pause=0.6):
     if current_chunk:
         chunks.append(create_chunk_object(current_chunk))
         
+    # Apply smart silence extension (+0.5s if silence follows, prioritizing next sentence start)
+    for c_idx in range(len(chunks)):
+        natural_end = chunks[c_idx]["end"]
+        if c_idx < len(chunks) - 1:
+            next_start = chunks[c_idx + 1]["start"]
+            gap = next_start - natural_end
+            if gap > 0.35:
+                chunks[c_idx]["end"] = round(min(natural_end + 0.5, next_start - 0.05), 3)
+            elif gap > 0:
+                chunks[c_idx]["end"] = next_start
+        else:
+            chunks[c_idx]["end"] = round(natural_end + 0.5, 3)
+
     return chunks
 
 def create_chunk_object(word_list):

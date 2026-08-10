@@ -1155,9 +1155,13 @@ def process_scribe_words(
         if idx < len(lines) - 1:
             next_start_sec = apply_offset(lines[idx + 1][0]["start"])
             gap            = next_start_sec - natural_end_sec
-            end_time_sec   = next_start_sec if gap <= gap_bridge_limit else natural_end_sec
+            if gap <= gap_bridge_limit:
+                end_time_sec = next_start_sec
+            else:
+                # Extend display time by up to 0.5s into silence gap, prioritizing next sentence start
+                end_time_sec = min(natural_end_sec + 0.5, next_start_sec - 0.05)
         else:
-            end_time_sec = natural_end_sec
+            end_time_sec = natural_end_sec + 0.5
 
         if end_time_sec < start_time_sec + 0.1:
             end_time_sec = start_time_sec + 0.1
@@ -1293,7 +1297,7 @@ async def transcribe_media(
                 audio_corrected_text = original_text_str
                 final_chunks = chunks
 
-                openrouter_key = effective_openrouter_key
+                openrouter_key = effective_openrouter_key or effective_gemini_key
 
                 if openrouter_key:
                     try:
