@@ -655,9 +655,7 @@ async def transcribe_with_groq_whisper(
     print(f"✅ Groq extracted {len(words_data)} words. Text length: {len(original_text)} chars.")
 
     # 2. AI Smart Processing with google/gemini-2.5-pro-preview-05-06 (Audio-Listening Mode)
-    audio_corrected_output = ""
-    text_only_output = ""
-    effective_api_key = openrouter_key or os.environ.get("OPENROUTER_API_KEY")
+    effective_api_key = openrouter_key or gemini_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMINI_API_KEY")
     
     if effective_api_key and not skip_correction:
         headers = {
@@ -1349,6 +1347,13 @@ async def transcribe_media(
                 is_video = audio_ext.lower() in VIDEO_EXTENSIONS
                 video_rel = yt_video_rel if yt_video_rel else (f"temp_{task_id}/audio{audio_ext}" if is_video else None)
 
+                is_ai_corrected = bool(audio_corrected_output or text_only_output)
+                ai_note = (
+                    "✨ تم تصحيح الترجمة بالذكاء الاصطناعي (Gemini 2.5 Pro)" if is_ai_corrected
+                    else ("⚡ تفريغ بدون تصحيح (وضع المجموعات السريع)" if isBatchMode == "true"
+                    else "⚡ تفريغ دقيق (لم يتم توفير مفتاح Gemini/OpenRouter)")
+                )
+
                 return {
                     "taskId": task_id,
                     "audioPath": f"temp_{task_id}/audio{audio_ext}",
@@ -1359,6 +1364,8 @@ async def transcribe_media(
                     "originalSegments": raw_subtitles,
                     "textOnlyText": text_only_output,
                     "audioCorrectedText": audio_corrected_output,
+                    "isAiCorrected": is_ai_corrected,
+                    "aiCorrectionNote": ai_note,
                     "animationType": animation,
                     "activeColor": activeColor,
                     "inactiveColor": inactiveColor,
