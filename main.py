@@ -714,6 +714,8 @@ async def transcribe_with_groq_whisper(
                             print(f"⚠️ OpenRouter returned empty content for model {m_name}. Retrying with fallback model...")
                 except Exception as e_m:
                     print(f"⚠️ OpenRouter request error for model {m_name}: {e_m}")
+        except Exception as e_aud:
+            print(f"⚠️ Audio listening mode warning: {e_aud}")
 
         # MODE B: Text-Only Phrase Splitting (without audio)
         try:
