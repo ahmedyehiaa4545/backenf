@@ -1099,8 +1099,35 @@ async def correct_scribe_with_gemini(
                     for k, w in enumerate(new_words)
                 ]
     else:
-        print(f"⚠️ Line count mismatch ({len(corrected_lines)} vs {len(corrected_chunks)}). Keeping original Scribe line splits to guarantee zero timing/sentence shift.")
-        corrected_chunks = chunks
+        print(f"✨ Line count mismatch ({len(corrected_lines)} vs {len(corrected_chunks)}). Smartly mapping Gemini corrected text onto Scribe's {len(corrected_chunks)} timing segments...")
+        all_gemini_words = [w for line in corrected_lines for w in line.split() if w]
+        w_idx = 0
+        total_segments = len(corrected_chunks)
+        
+        for i in range(total_segments):
+            if i == total_segments - 1:
+                seg_words = all_gemini_words[w_idx:]
+            else:
+                orig_count = max(1, len(chunks[i].get("words", [])) or len(chunks[i]["text"].split()))
+                seg_words = all_gemini_words[w_idx : w_idx + orig_count]
+                w_idx += len(seg_words)
+                
+            new_line = " ".join(seg_words)
+            clean_new_line = re.sub(r"[^\w\s\?؟]+$", "", new_line.strip())
+            corrected_chunks[i]["text"] = clean_new_line
+            
+            c_start = corrected_chunks[i]["start"]
+            c_end = corrected_chunks[i]["end"]
+            dur = max(0.1, c_end - c_start)
+            step = dur / max(1, len(seg_words))
+            corrected_chunks[i]["words"] = [
+                {
+                    "word": w,
+                    "start": round(c_start + k * step, 3),
+                    "end": round(c_start + (k + 1) * step, 3)
+                }
+                for k, w in enumerate(seg_words)
+            ]
 
     audio_corrected_text_result = "\n".join(c["text"] for c in corrected_chunks)
     return corrected_chunks, audio_corrected_text_result
