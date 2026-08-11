@@ -698,13 +698,22 @@ async def transcribe_with_groq_whisper(
                 "temperature": 0.1
             }
 
-            resp_aud = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_audio, timeout=120)
-            if resp_aud.status_code == 200:
-                audio_corrected_output = resp_aud.json()["choices"][0]["message"]["content"].strip()
-                audio_corrected_output = re.sub(r"\|+", "|", audio_corrected_output.replace("\r", "|").replace("\n", "|")).strip("| ")
-                print(f"✅ Audio Listening output generated ({len(audio_corrected_output)} chars).")
-        except Exception as e_aud:
-            print(f"⚠️ Audio listening mode warning: {e_aud}")
+            models_to_try = ["google/gemini-2.5-pro-preview-05-06", "google/gemini-2.5-pro-preview-06-05", "google/gemini-2.5-flash"]
+            for m_name in models_to_try:
+                req_data_audio["model"] = m_name
+                try:
+                    resp_aud = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_audio, timeout=120)
+                    if resp_aud.status_code == 200:
+                        content = resp_aud.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                        if content and content.strip():
+                            audio_corrected_output = content.strip()
+                            audio_corrected_output = re.sub(r"\|+", "|", audio_corrected_output.replace("\r", "|").replace("\n", "|")).strip("| ")
+                            print(f"✅ Audio Listening output generated with {m_name} ({len(audio_corrected_output)} chars).")
+                            break
+                        else:
+                            print(f"⚠️ OpenRouter returned empty content for model {m_name}. Retrying with fallback model...")
+                except Exception as e_m:
+                    print(f"⚠️ OpenRouter request error for model {m_name}: {e_m}")
 
         # MODE B: Text-Only Phrase Splitting (without audio)
         try:
@@ -1019,21 +1028,32 @@ async def correct_scribe_with_gemini(
     }
 
     def _call_or():
-        max_retries = 2
-        for attempt in range(max_retries + 1):
-            try:
-                res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_audio, timeout=180)
-                res.raise_for_status()
-                data = res.json()
-                content = data.get("choices", [{}])[0].get("message", {}).get("content")
-                if content and content.strip():
-                    return data
-                print(f"⚠️ OpenRouter returned empty content on attempt {attempt + 1}. Retrying in 2 seconds...")
-            except Exception as e_or:
-                print(f"⚠️ OpenRouter request warning on attempt {attempt + 1}: {e_or}")
-                if attempt == max_retries:
-                    raise e_or
-            time.sleep(2)
+        models_to_try = [
+            target_model,
+            "google/gemini-2.5-pro-preview-06-05",
+            "google/gemini-2.5-flash"
+        ]
+        for m_name in models_to_try:
+            req_data_audio["model"] = m_name
+            for attempt in range(2):
+                try:
+                    res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_audio, timeout=120)
+                    res.raise_for_status()
+                    data = res.json()
+                    choices = data.get("choices", [])
+                    if choices:
+                        msg = choices[0].get("message", {})
+                        content = msg.get("content")
+                        if content and content.strip():
+                            if m_name != target_model:
+                                print(f"✨ Successfully retrieved content using fallback model {m_name}")
+                            return data
+                        else:
+                            finish_reason = choices[0].get("finish_reason", "empty")
+                            print(f"⚠️ OpenRouter returned empty content on attempt {attempt + 1} with model {m_name} (finish_reason: {finish_reason}). Trying fallback model...")
+                except Exception as e_or:
+                    print(f"⚠️ OpenRouter request warning on attempt {attempt + 1} ({m_name}): {e_or}")
+                time.sleep(1)
         return {}
 
     print(f"🎧 Sending Audio Listening Correction to OpenRouter with model: {target_model}...")
@@ -1345,7 +1365,7 @@ async def transcribe_media(
                     max_words=maxWords,
                     openrouter_key=effective_openrouter_key,
                     gemini_key=effective_gemini_key,
-                    skip_correction=(isBatchMode == "true")
+                    skip_correction=False
                 )
 
                 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".flv", ".3gp", ".wmv"}
@@ -1354,9 +1374,8 @@ async def transcribe_media(
 
                 is_ai_corrected = bool(audio_corrected_output or text_only_output)
                 ai_note = (
-                    "✨ تم تصحيح الترجمة بالذكاء الاصطناعي (Gemini 2.5 Pro)" if is_ai_corrected
-                    else ("⚡ تفريغ بدون تصحيح (وضع المجموعات السريع)" if isBatchMode == "true"
-                    else "⚡ تفريغ دقيق (لم يتم توفير مفتاح Gemini/OpenRouter)")
+                    "✨ تم تصحيح الترجمة بالذكاء الاصطناعي" if is_ai_corrected
+                    else "⚡ تفريغ دقيق (لم يتم توفير مفتاح الذكاء الاصطناعي)"
                 )
 
                 return {
