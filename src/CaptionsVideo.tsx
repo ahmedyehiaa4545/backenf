@@ -340,10 +340,11 @@ const TitleOverlay: React.FC<{
   }
 
   const getSplitFontSize = (str: string) => {
-    if (str.length <= 14) return '60px';
-    if (str.length <= 20) return '52px';
-    if (str.length <= 26) return '44px';
-    return '39px';
+    if (str.length <= 15) return '52px';
+    if (str.length <= 22) return '42px';
+    if (str.length <= 30) return '34px';
+    if (str.length <= 40) return '28px';
+    return '24px';
   };
 
   return (
@@ -371,8 +372,8 @@ const TitleOverlay: React.FC<{
           style={{
             display: 'flex',
             flexDirection: 'column',
-            width: '88%',
-            maxWidth: '560px',
+            width: '92%',
+            maxWidth: '920px',
             margin: '0 auto',
             boxShadow: '0 14px 40px rgba(0,0,0,0.75)',
             borderRadius: '4px',
@@ -389,12 +390,12 @@ const TitleOverlay: React.FC<{
               fontFamily,
               fontWeight: 900,
               fontSize: getSplitFontSize(splitLine1),
-              padding: '10px 18px',
+              padding: '10px 20px',
               textAlign: 'center',
               lineHeight: 1.3,
               width: '100%',
               boxSizing: 'border-box',
-              whiteSpace: 'nowrap',
+              wordBreak: 'break-word',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -412,12 +413,12 @@ const TitleOverlay: React.FC<{
                 fontFamily,
                 fontWeight: 900,
                 fontSize: getSplitFontSize(splitLine2),
-                padding: '10px 18px',
+                padding: '10px 20px',
                 textAlign: 'center',
                 lineHeight: 1.3,
                 width: '100%',
                 boxSizing: 'border-box',
-                whiteSpace: 'nowrap',
+                wordBreak: 'break-word',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',

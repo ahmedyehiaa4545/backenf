@@ -698,22 +698,25 @@ async def transcribe_with_groq_whisper(
                 "temperature": 0.1
             }
 
-            models_to_try = ["google/gemini-2.5-pro-preview-05-06", "google/gemini-2.5-pro-preview-06-05", "google/gemini-2.5-flash"]
-            for m_name in models_to_try:
-                req_data_audio["model"] = m_name
+            target_model = "google/gemini-2.5-pro-preview-05-06"
+            req_data_audio["model"] = target_model
+            max_attempts = 4
+            for attempt in range(1, max_attempts + 1):
                 try:
+                    print(f"🎧 OpenRouter Audio Listening attempt {attempt}/{max_attempts} with model {target_model}...")
                     resp_aud = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_audio, timeout=120)
                     if resp_aud.status_code == 200:
                         content = resp_aud.json().get("choices", [{}])[0].get("message", {}).get("content", "")
                         if content and content.strip():
                             audio_corrected_output = content.strip()
                             audio_corrected_output = re.sub(r"\|+", "|", audio_corrected_output.replace("\r", "|").replace("\n", "|")).strip("| ")
-                            print(f"✅ Audio Listening output generated with {m_name} ({len(audio_corrected_output)} chars).")
+                            print(f"✅ Audio Listening output generated with {target_model} on attempt {attempt} ({len(audio_corrected_output)} chars).")
                             break
                         else:
-                            print(f"⚠️ OpenRouter returned empty content for model {m_name}. Retrying with fallback model...")
+                            print(f"⚠️ OpenRouter returned empty content on attempt {attempt}/{max_attempts} for model {target_model}. Retrying same model...")
                 except Exception as e_m:
-                    print(f"⚠️ OpenRouter request error for model {m_name}: {e_m}")
+                    print(f"⚠️ OpenRouter request error on attempt {attempt}/{max_attempts} for model {target_model}: {e_m}")
+                time.sleep(1.5)
         except Exception as e_aud:
             print(f"⚠️ Audio listening mode warning: {e_aud}")
 
@@ -1030,32 +1033,29 @@ async def correct_scribe_with_gemini(
     }
 
     def _call_or():
-        models_to_try = [
-            target_model,
-            "google/gemini-2.5-pro-preview-06-05",
-            "google/gemini-2.5-flash"
-        ]
-        for m_name in models_to_try:
-            req_data_audio["model"] = m_name
-            for attempt in range(2):
-                try:
-                    res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_audio, timeout=120)
-                    res.raise_for_status()
-                    data = res.json()
-                    choices = data.get("choices", [])
-                    if choices:
-                        msg = choices[0].get("message", {})
-                        content = msg.get("content")
-                        if content and content.strip():
-                            if m_name != target_model:
-                                print(f"✨ Successfully retrieved content using fallback model {m_name}")
-                            return data
-                        else:
-                            finish_reason = choices[0].get("finish_reason", "empty")
-                            print(f"⚠️ OpenRouter returned empty content on attempt {attempt + 1} with model {m_name} (finish_reason: {finish_reason}). Trying fallback model...")
-                except Exception as e_or:
-                    print(f"⚠️ OpenRouter request warning on attempt {attempt + 1} ({m_name}): {e_or}")
-                time.sleep(1)
+        req_data_audio["model"] = target_model
+        max_attempts = 4
+        for attempt in range(1, max_attempts + 1):
+            try:
+                print(f"🎧 Sending Audio Listening Correction to OpenRouter with model {target_model} (Attempt {attempt}/{max_attempts})...")
+                res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_audio, timeout=120)
+                res.raise_for_status()
+                data = res.json()
+                choices = data.get("choices", [])
+                if choices:
+                    msg = choices[0].get("message", {})
+                    content = msg.get("content")
+                    if content and content.strip():
+                        print(f"✨ Successfully retrieved content using {target_model} on attempt {attempt}")
+                        return data
+                    else:
+                        finish_reason = choices[0].get("finish_reason", "empty")
+                        print(f"⚠️ OpenRouter returned empty content on attempt {attempt}/{max_attempts} with model {target_model} (finish_reason: {finish_reason}). Retrying same model...")
+                else:
+                    print(f"⚠️ OpenRouter returned no choices on attempt {attempt}/{max_attempts} with model {target_model}. Retrying same model...")
+            except Exception as e_or:
+                print(f"⚠️ OpenRouter request warning on attempt {attempt}/{max_attempts} ({target_model}): {e_or}")
+            time.sleep(1.5)
         return {}
 
     print(f"🎧 Sending Audio Listening Correction to OpenRouter with model: {target_model}...")
@@ -1734,32 +1734,32 @@ async def correct_srt_with_cohere_text(all_words, chunks, cohere_text: str, req_
             f"[Whisper SRT]:\n{srt_content}"
         )
         
-        models_to_try = [
-            "google/gemini-2.5-flash",
-            "google/gemini-2.5-flash-lite",
-            "google/gemini-3.5-flash-lite"
-        ]
-        
+        target_model = "google/gemini-2.5-flash"
+        payload = {
+            "model": target_model,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        headers = {
+            "Authorization": f"Bearer {openrouter_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://rekaption.hf.space",
+            "X-Title": "ReKaption"
+        }
         response_json = None
-        for m_name in models_to_try:
-            payload = {
-                "model": m_name,
-                "messages": [{"role": "user", "content": prompt}]
-            }
-            headers = {
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://rekaption.hf.space",
-                "X-Title": "ReKaption"
-            }
-            print(f"Initiating OpenRouter AI correction with model {m_name}...")
-            res = await asyncio.to_thread(call_openrouter_sync, payload, headers)
-            if "choices" in res:
-                response_json = res
-                print(f"Successfully received correction response from OpenRouter using model {m_name}")
-                break
-            else:
-                print(f"Model {m_name} response warning: {res}")
+        max_attempts = 4
+        for attempt in range(1, max_attempts + 1):
+            print(f"Initiating OpenRouter AI correction with model {target_model} (Attempt {attempt}/{max_attempts})...")
+            try:
+                res = await asyncio.to_thread(call_openrouter_sync, payload, headers)
+                if "choices" in res and res["choices"] and res["choices"][0].get("message", {}).get("content", "").strip():
+                    response_json = res
+                    print(f"Successfully received correction response from OpenRouter using model {target_model} on attempt {attempt}")
+                    break
+                else:
+                    print(f"Attempt {attempt}/{max_attempts} model {target_model} empty/invalid response. Retrying same model...")
+            except Exception as err_or:
+                print(f"Attempt {attempt}/{max_attempts} model {target_model} warning: {err_or}")
+            await asyncio.sleep(1.5)
 
         if not response_json:
             print("⚠️ All OpenRouter models failed to return a response.")
