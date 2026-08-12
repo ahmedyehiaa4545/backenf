@@ -285,21 +285,27 @@ const TitleOverlay: React.FC<{
   const endFrame = (titleDuration && titleDuration > 0) ? Math.ceil(titleDuration * fps) : 999999;
   if (endFrame < 999000 && frame > endFrame) return null;
 
-  const inDur  = Math.min(12, Math.floor(fps * 0.35)); // ~0.35s in
+  const inDur  = Math.min(14, Math.floor(fps * 0.42)); // ~0.42s in
   const outDur = Math.min(10, Math.floor(fps * 0.28)); // ~0.28s out
 
-  // Ease-out cubic helper
-  const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
-  const easeIn  = (t: number) => Math.pow(t, 2);
+  // Fast start, smooth deceleration ease-out curve (cubic-bezier 0.16, 1, 0.3, 1)
+  const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+  const easeIn = (t: number) => Math.pow(t, 2);
 
   let opacity    = 1;
   let translateY = 0;
   let scale      = 1;
+  let blurPx     = 0;
 
   if (frame < inDur) {
-    const t = easeOut(frame / inDur);
+    const tProgress = frame / inDur;
+    const t = easeOutCubic(tProgress);
     opacity    = t;
-    if (titleStyle === 'centered-rect') {
+    if (titleStyle === 'split-contrast') {
+      translateY = 45 * (1 - t);   // slide UP from bottom
+      // Blur vanishes very fast (by 40% of the entrance duration)
+      blurPx     = Math.max(0, 8 * (1 - tProgress * 2.5));
+    } else if (titleStyle === 'centered-rect') {
       scale      = 0.7 + 0.3 * t; // pops in from 70% scale
       translateY = 15 * (1 - t);
     } else {
@@ -312,6 +318,33 @@ const TitleOverlay: React.FC<{
     translateY = -20 * (1 - t);  // drifts up slightly on exit
     scale      = 0.92 + 0.08 * t;
   }
+
+  // Auto split logic for 'split-contrast' style (4 words limit for single line, >=5 splits into 2 lines with min 2 words in 2nd line)
+  let splitLine1 = titleText;
+  let splitLine2: string | null = null;
+
+  if (titleStyle === 'split-contrast' && titleText) {
+    const words = titleText.trim().split(/\s+/).filter(w => w);
+    if (words.length <= 4) {
+      splitLine1 = words.join(' ');
+      splitLine2 = null;
+    } else {
+      let line2Count = 2;
+      if (words.length >= 6) {
+        line2Count = Math.floor(words.length / 2);
+      }
+      const line1Count = words.length - line2Count;
+      splitLine1 = words.slice(0, line1Count).join(' ');
+      splitLine2 = words.slice(line1Count).join(' ');
+    }
+  }
+
+  const getSplitFontSize = (str: string) => {
+    if (str.length <= 14) return '46px';
+    if (str.length <= 20) return '40px';
+    if (str.length <= 26) return '34px';
+    return '30px';
+  };
 
   return (
     <div
@@ -327,32 +360,95 @@ const TitleOverlay: React.FC<{
         zIndex: 15,
         pointerEvents: 'none',
         direction: 'rtl',
-        gap: '10px',
+        gap: '0px',
         opacity,
+        filter: blurPx > 0.1 ? `blur(${blurPx.toFixed(1)}px)` : 'none',
         transform: `translateY(${translateY}px) scale(${scale})`,
       }}
     >
-      {/* Main Title Box */}
-      <div
-        style={{
-          background: titleBgColor,
-          color: titleColor,
-          fontFamily,
-          fontWeight: 900,
-          fontSize: titleStyle === 'centered-rect' ? '46px' : '42px',
-          padding: titleStyle === 'centered-rect' ? '10px 22px' : '14px 32px',
-          borderRadius: titleStyle === 'centered-rect' ? '0px' : '36px',
-          boxShadow: '0 10px 36px rgba(0,0,0,0.65)',
-          textAlign: 'center',
-          maxWidth: '88%',
-          lineHeight: 1.3,
-          letterSpacing: '-0.5px',
-          whiteSpace: 'pre-wrap',
-        }}
-      >
-        {titleText}
-      </div>
+      {titleStyle === 'split-contrast' ? (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            width: '88%',
+            maxWidth: '560px',
+            margin: '0 auto',
+            boxShadow: '0 14px 40px rgba(0,0,0,0.75)',
+            borderRadius: '4px',
+            overflow: 'hidden',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {/* Top Line: White BG, Black Text */}
+          <div
+            style={{
+              background: '#FFFFFF',
+              color: '#000000',
+              fontFamily,
+              fontWeight: 900,
+              fontSize: getSplitFontSize(splitLine1),
+              padding: '10px 18px',
+              textAlign: 'center',
+              lineHeight: 1.3,
+              width: '100%',
+              boxSizing: 'border-box',
+              whiteSpace: 'nowrap',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            {splitLine1}
+          </div>
 
+          {/* Bottom Line: Black BG, White Text (if 2nd line exists) */}
+          {splitLine2 && (
+            <div
+              style={{
+                background: '#000000',
+                color: '#FFFFFF',
+                fontFamily,
+                fontWeight: 900,
+                fontSize: getSplitFontSize(splitLine2),
+                padding: '10px 18px',
+                textAlign: 'center',
+                lineHeight: 1.3,
+                width: '100%',
+                boxSizing: 'border-box',
+                whiteSpace: 'nowrap',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              {splitLine2}
+            </div>
+          )}
+        </div>
+      ) : (
+        /* Standard Title Box */
+        <div
+          style={{
+            background: titleBgColor,
+            color: titleColor,
+            fontFamily,
+            fontWeight: 900,
+            fontSize: titleStyle === 'centered-rect' ? '46px' : '42px',
+            padding: titleStyle === 'centered-rect' ? '10px 22px' : '14px 32px',
+            borderRadius: titleStyle === 'centered-rect' ? '0px' : '36px',
+            boxShadow: '0 10px 36px rgba(0,0,0,0.65)',
+            textAlign: 'center',
+            maxWidth: '88%',
+            lineHeight: 1.3,
+            letterSpacing: '-0.5px',
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {titleText}
+        </div>
+      )}
     </div>
   );
 };
