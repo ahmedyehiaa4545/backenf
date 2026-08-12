@@ -972,14 +972,15 @@ async def correct_scribe_with_gemini(
         boost_cmd = [
             "ffmpeg", "-y", "-i", audio_path,
             "-filter:a", "volume=10dB",
-            "-ar", "44100",
-            "-b:a", "192k",
+            "-ac", "1",
+            "-ar", "16000",
+            "-b:a", "32k",
             boosted_audio_path
         ]
         subprocess.run(boost_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         target_file_to_read = boosted_audio_path
         aud_fmt = "mp3"
-        print("🔊 Generated high-quality +10dB boosted audio for OpenRouter Gemini listening.")
+        print("🔊 Generated ultra-lightweight +10dB boosted 16kHz mono audio for OpenRouter Gemini listening.")
     except Exception as e_boost:
         print(f"⚠️ Audio volume boosting warning ({e_boost}). Using original audio.")
         target_file_to_read = audio_path
