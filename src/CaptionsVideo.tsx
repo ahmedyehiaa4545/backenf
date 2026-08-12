@@ -340,10 +340,10 @@ const TitleOverlay: React.FC<{
   }
 
   const getSplitFontSize = (str: string) => {
-    if (str.length <= 14) return '46px';
-    if (str.length <= 20) return '40px';
-    if (str.length <= 26) return '34px';
-    return '30px';
+    if (str.length <= 14) return '60px';
+    if (str.length <= 20) return '52px';
+    if (str.length <= 26) return '44px';
+    return '39px';
   };
 
   return (
@@ -435,8 +435,8 @@ const TitleOverlay: React.FC<{
             color: titleColor,
             fontFamily,
             fontWeight: 900,
-            fontSize: titleStyle === 'centered-rect' ? '46px' : '42px',
-            padding: titleStyle === 'centered-rect' ? '10px 22px' : '14px 32px',
+            fontSize: titleStyle === 'centered-rect' ? '60px' : '55px',
+            padding: titleStyle === 'centered-rect' ? '12px 26px' : '16px 36px',
             borderRadius: titleStyle === 'centered-rect' ? '0px' : '36px',
             boxShadow: '0 10px 36px rgba(0,0,0,0.65)',
             textAlign: 'center',
@@ -481,7 +481,7 @@ export const CaptionsVideo: React.FC<CaptionsData> = ({
   titleText = '',
   titleColor = '#FFFFFF',
   titleBgColor = '#000000',
-  titleDuration = 3.0,
+  titleDuration = 6.5,
   titleTop = 12,
   titleStyle = 'tiktok-pill',
   titleSubtext = '',
