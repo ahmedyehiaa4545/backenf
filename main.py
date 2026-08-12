@@ -1074,59 +1074,48 @@ async def correct_scribe_with_gemini(
     corrected_lines = [l.strip() for l in corrected_str.splitlines() if l.strip()]
     corrected_chunks = copy.deepcopy(chunks)
 
+    import difflib
+
+    scribe_line_texts = [c["text"].strip() for c in chunks]
+    aligned_gemini_lines = [None] * len(chunks)
+
     if len(corrected_lines) == len(corrected_chunks):
         print(f"✨ Applying {target_model} audio correction to {len(corrected_chunks)} Scribe segments (exact line match)...")
-        for i, new_line in enumerate(corrected_lines):
-            clean_new_line = re.sub(r"[^\w\s\?؟]+$", "", new_line.strip())
-            corrected_chunks[i]["text"] = clean_new_line
-            new_words = clean_new_line.split()
-            old_words = corrected_chunks[i].get("words", [])
-            
-            if len(new_words) == len(old_words):
-                for k in range(len(new_words)):
-                    old_words[k]["word"] = new_words[k]
-            else:
-                c_start = corrected_chunks[i]["start"]
-                c_end = corrected_chunks[i]["end"]
-                dur = max(0.1, c_end - c_start)
-                step = dur / max(1, len(new_words))
-                corrected_chunks[i]["words"] = [
-                    {
-                        "word": w,
-                        "start": round(c_start + k * step, 3),
-                        "end": round(c_start + (k + 1) * step, 3)
-                    }
-                    for k, w in enumerate(new_words)
-                ]
+        aligned_gemini_lines = corrected_lines
     else:
-        print(f"✨ Line count mismatch ({len(corrected_lines)} vs {len(corrected_chunks)}). Smartly mapping Gemini corrected text onto Scribe's {len(corrected_chunks)} timing segments...")
-        all_gemini_words = [w for line in corrected_lines for w in line.split() if w]
-        w_idx = 0
-        total_segments = len(corrected_chunks)
+        print(f"✨ Line count mismatch ({len(corrected_lines)} vs {len(corrected_chunks)}). Aligning Gemini corrections per segment while preserving 100% Scribe timing anchors...")
+        matcher = difflib.SequenceMatcher(None, scribe_line_texts, corrected_lines)
+        for block in matcher.get_matching_blocks():
+            for k in range(block.size):
+                if block.a + k < len(aligned_gemini_lines):
+                    aligned_gemini_lines[block.a + k] = corrected_lines[block.b + k]
+
+    for i in range(len(corrected_chunks)):
+        target_line = aligned_gemini_lines[i] or scribe_line_texts[i]
+        clean_new_line = re.sub(r"[^\w\s\?؟]+$", "", target_line.strip())
+        corrected_chunks[i]["text"] = clean_new_line
         
-        for i in range(total_segments):
-            if i == total_segments - 1:
-                seg_words = all_gemini_words[w_idx:]
-            else:
-                orig_count = max(1, len(chunks[i].get("words", [])) or len(chunks[i]["text"].split()))
-                seg_words = all_gemini_words[w_idx : w_idx + orig_count]
-                w_idx += len(seg_words)
-                
-            new_line = " ".join(seg_words)
-            clean_new_line = re.sub(r"[^\w\s\?؟]+$", "", new_line.strip())
-            corrected_chunks[i]["text"] = clean_new_line
-            
+        new_words = clean_new_line.split()
+        old_words = corrected_chunks[i].get("words", [])
+        
+        if len(new_words) == len(old_words):
+            # Preserve Scribe's EXACT word-level start & end timestamps 100%
+            for k in range(len(new_words)):
+                old_words[k]["word"] = new_words[k]
+            corrected_chunks[i]["words"] = old_words
+        else:
+            # Re-distribute words strictly within segment i's start & end time anchors
             c_start = corrected_chunks[i]["start"]
             c_end = corrected_chunks[i]["end"]
             dur = max(0.1, c_end - c_start)
-            step = dur / max(1, len(seg_words))
+            step = dur / max(1, len(new_words))
             corrected_chunks[i]["words"] = [
                 {
                     "word": w,
                     "start": round(c_start + k * step, 3),
                     "end": round(c_start + (k + 1) * step, 3)
                 }
-                for k, w in enumerate(seg_words)
+                for k, w in enumerate(new_words)
             ]
 
     audio_corrected_text_result = "\n".join(c["text"] for c in corrected_chunks)
