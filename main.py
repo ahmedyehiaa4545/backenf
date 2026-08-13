@@ -1485,6 +1485,124 @@ async def transcribe_media(
         clean_temp_dir(task_dir)
         raise HTTPException(status_code=500, detail=str(e))
 
+TRANSCRIBE_TASKS = {}
+
+@app.get("/api/transcribe-task-status/{task_id}")
+async def get_transcribe_task_status(task_id: str):
+    if task_id not in TRANSCRIBE_TASKS:
+        return {"status": "not_found", "error": "المهمة غير موجودة أو انتهت صلاحيتها."}
+    return TRANSCRIBE_TASKS[task_id]
+
+@app.post("/api/transcribe-async")
+async def transcribe_media_async(
+    background_tasks: BackgroundTasks,
+    audio: UploadFile = File(None),
+    youtubeUrl: str = Form(None),
+    leftLogo: UploadFile = File(None),
+    rightLogo: UploadFile = File(None),
+    minWords: int = Form(3),
+    maxWords: int = Form(4),
+    animation: str = Form("classic"),
+    activeColor: str = Form("#FFFFFF"),
+    inactiveColor: str = Form("#FFFFFF"),
+    visitorId: str = Form(None),
+    uid: str = Form(None),
+    openrouterKey: str = Form(None),
+    hfToken: str = Form(None),
+    groqApiKey: str = Form(None),
+    geminiApiKey: str = Form(None),
+    captionEngine: str = Form("v1"),
+    elevenLabsApiKey: str = Form(None),
+    isBatchMode: str = Form(None)
+):
+    task_id = str(uuid.uuid4())
+    public_dir = os.path.abspath("public")
+    task_dir = os.path.join(public_dir, f"temp_{task_id}")
+    os.makedirs(task_dir, exist_ok=True)
+
+    saved_audio_file = None
+    if audio:
+        ext = os.path.splitext(audio.filename)[1] or ".mp3"
+        audio_save_path = os.path.join(task_dir, f"input{ext}")
+        content = await audio.read()
+        with open(audio_save_path, "wb") as f:
+            f.write(content)
+        saved_audio_file = (audio_save_path, ext)
+
+    saved_left_logo = None
+    if leftLogo:
+        l_ext = os.path.splitext(leftLogo.filename)[1] or ".png"
+        l_path = os.path.join(task_dir, f"left_logo{l_ext}")
+        with open(l_path, "wb") as f:
+            f.write(await leftLogo.read())
+        saved_left_logo = l_path
+
+    saved_right_logo = None
+    if rightLogo:
+        r_ext = os.path.splitext(rightLogo.filename)[1] or ".png"
+        r_path = os.path.join(task_dir, f"right_logo{r_ext}")
+        with open(r_path, "wb") as f:
+            f.write(await rightLogo.read())
+        saved_right_logo = r_path
+
+    TRANSCRIBE_TASKS[task_id] = {"status": "processing", "progress": "جاري بدء معالجة الكابشن وتفريغ الصوت..."}
+
+    async def run_async_transcribe():
+        try:
+            audio_obj = None
+            if saved_audio_file:
+                audio_obj = UploadFile(filename=f"input{saved_audio_file[1]}", file=open(saved_audio_file[0], "rb"))
+            
+            left_logo_obj = UploadFile(filename="left_logo.png", file=open(saved_left_logo, "rb")) if saved_left_logo else None
+            right_logo_obj = UploadFile(filename="right_logo.png", file=open(saved_right_logo, "rb")) if saved_right_logo else None
+
+            res = await transcribe_media(
+                audio=audio_obj,
+                youtubeUrl=youtubeUrl,
+                leftLogo=left_logo_obj,
+                rightLogo=right_logo_obj,
+                minWords=minWords,
+                maxWords=maxWords,
+                animation=animation,
+                activeColor=activeColor,
+                inactiveColor=inactiveColor,
+                visitorId=visitorId,
+                uid=uid,
+                openrouterKey=openrouterKey,
+                hfToken=hfToken,
+                groqApiKey=groqApiKey,
+                geminiApiKey=geminiApiKey,
+                captionEngine=captionEngine,
+                elevenLabsApiKey=elevenLabsApiKey,
+                isBatchMode=isBatchMode
+            )
+
+            # Close opened file handlers
+            if audio_obj and hasattr(audio_obj.file, 'close'): audio_obj.file.close()
+            if left_logo_obj and hasattr(left_logo_obj.file, 'close'): left_logo_obj.file.close()
+            if right_logo_obj and hasattr(right_logo_obj.file, 'close'): right_logo_obj.file.close()
+
+            TRANSCRIBE_TASKS[task_id] = {
+                "status": "success",
+                "result": res
+            }
+        except Exception as e_async:
+            print(f"[{task_id}] Transcribe async background failed: {e_async}")
+            TRANSCRIBE_TASKS[task_id] = {
+                "status": "failed",
+                "error": str(e_async)
+            }
+
+    background_tasks.add_task(run_async_transcribe)
+
+    async def remove_transcribe_task_state():
+        await asyncio.sleep(600)
+        if task_id in TRANSCRIBE_TASKS:
+            del TRANSCRIBE_TASKS[task_id]
+
+    background_tasks.add_task(remove_transcribe_task_state)
+    return {"status": "processing", "taskId": task_id}
+
 def transcribe_youtube_with_gemini_server(youtube_url: str, task_dir: str, api_key: str, chunk_minutes: int = 7) -> str:
     import yt_dlp
     import google.generativeai as genai
