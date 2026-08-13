@@ -667,7 +667,7 @@ async def transcribe_with_groq_whisper(
 
         # MODE A: Multimodal Audio Listening & Speech Correction
         try:
-            print("🎧 Running google/gemini-2.5-pro-preview-05-06 WITH AUDIO LISTENING...")
+            print("🎧 Running google/gemini-3.7-flash WITH AUDIO LISTENING...")
             import base64
             with open(audio_path, "rb") as f_aud:
                 audio_b64 = base64.b64encode(f_aud.read()).decode("utf-8")
@@ -684,7 +684,7 @@ async def transcribe_with_groq_whisper(
 النص المفرغ المبدئي:
 {original_text}"""
 
-            target_model = "google/gemini-2.5-pro-preview-05-06"
+            target_model = "google/gemini-3.7-flash"
             req_data_audio = {
                 "model": target_model,
                 "messages": [
@@ -721,12 +721,12 @@ async def transcribe_with_groq_whisper(
 
         # MODE B: Text-Only Phrase Splitting (without audio)
         try:
-            print("📝 Running google/gemini-2.5-pro-preview-05-06 TEXT-ONLY...")
+            print("📝 Running google/gemini-3.7-flash TEXT-ONLY...")
             prompt_text = f"""أنت خبير في تقسيم السبترايتل. مهمتك الوحيدة: إدراج علامة "|" داخل النص لتقسيمه إلى مقاطع من {min_words} إلى {max_words} كلمات بالمعنى. ممنوع تغيير أو تعديل أي كلمة:
 {original_text}"""
 
             req_data_text = {
-                "model": "google/gemini-2.5-pro-preview-05-06",
+                "model": "google/gemini-3.7-flash",
                 "messages": [{"role": "user", "content": prompt_text}],
                 "temperature": 0.1
             }
@@ -915,6 +915,137 @@ async def transcribe_with_groq_whisper(
     print(f"🎉 Generated {len(subtitles)} welded subtitle chunks via Gemini Audio Listening!")
     return subtitles, duration, original_text, raw_subtitles, text_only_output, audio_corrected_output
 
+DEEP_FILTER_BIN_PATH = None
+
+def get_deep_filter_binary() -> str | None:
+    """
+    Finds or automatically downloads the standalone precompiled DeepFilterNet CLI binary.
+    Zero Python package conflicts, pure Rust high-speed speech enhancement.
+    """
+    global DEEP_FILTER_BIN_PATH
+    if DEEP_FILTER_BIN_PATH and os.path.exists(DEEP_FILTER_BIN_PATH):
+        return DEEP_FILTER_BIN_PATH
+
+    import shutil
+    import platform
+    import stat
+    import requests
+
+    # 1. Check if deep-filter is already installed in system PATH or standard locations
+    found = shutil.which("deep-filter") or shutil.which("deep-filter.exe")
+    if found and os.path.exists(found):
+        DEEP_FILTER_BIN_PATH = found
+        return DEEP_FILTER_BIN_PATH
+
+    for common_path in ["/usr/local/bin/deep-filter", "/app/bin/deep-filter", "./bin/deep-filter", "./bin/deep-filter.exe"]:
+        if os.path.exists(common_path):
+            DEEP_FILTER_BIN_PATH = os.path.abspath(common_path)
+            return DEEP_FILTER_BIN_PATH
+
+    # 2. Automatically download precompiled standalone binary from GitHub Releases
+    bin_dir = os.path.abspath("bin")
+    os.makedirs(bin_dir, exist_ok=True)
+    system_os = platform.system().lower()
+    
+    if system_os == "windows":
+        target_name = "deep-filter.exe"
+        download_url = "https://github.com/Rikorose/DeepFilterNet/releases/download/v0.5.6/deep-filter-0.5.6-x86_64-pc-windows-msvc.exe"
+    elif system_os == "darwin":
+        target_name = "deep-filter"
+        download_url = "https://github.com/Rikorose/DeepFilterNet/releases/download/v0.5.6/deep-filter-0.5.6-x86_64-apple-darwin"
+    else:
+        target_name = "deep-filter"
+        download_url = "https://github.com/Rikorose/DeepFilterNet/releases/download/v0.5.6/deep-filter-0.5.6-x86_64-unknown-linux-musl"
+
+    local_bin = os.path.join(bin_dir, target_name)
+    if not os.path.exists(local_bin):
+        try:
+            print(f"⬇️ Downloading precompiled DeepFilterNet CLI binary from {download_url}...")
+            res = requests.get(download_url, timeout=60)
+            res.raise_for_status()
+            with open(local_bin, "wb") as f:
+                f.write(res.content)
+            os.chmod(local_bin, os.stat(local_bin).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            print(f"✅ DeepFilterNet binary installed at: {local_bin}")
+        except Exception as e_dl:
+            print(f"⚠️ Failed to download DeepFilterNet binary: {e_dl}")
+            return None
+
+    DEEP_FILTER_BIN_PATH = local_bin
+    return DEEP_FILTER_BIN_PATH
+
+def enhance_audio_with_deepfilternet(input_audio_path: str, task_dir: str) -> str:
+    """
+    Enhances speech audio using DeepFilterNet neural noise reduction.
+    Eliminates background noise, hum, and room reverb before sending to Scribe and Gemini.
+    Returns the path to the enhanced audio file (or original audio path on failure).
+    """
+    if not input_audio_path or not os.path.exists(input_audio_path):
+        return input_audio_path
+
+    bin_path = get_deep_filter_binary()
+    if not bin_path:
+        print("ℹ️ DeepFilterNet binary not available. Proceeding with original audio.")
+        return input_audio_path
+
+    import subprocess
+    import time
+    import shutil
+
+    # Step 1: Convert input audio to 48kHz mono WAV (DeepFilterNet strict requirement)
+    prep_48k_wav = os.path.join(task_dir, f"df_prep_48k_{int(time.time())}.wav")
+    df_out_dir = os.path.join(task_dir, f"df_out_{int(time.time())}")
+    os.makedirs(df_out_dir, exist_ok=True)
+
+    try:
+        print(f"🎧 [DeepFilterNet] Preparing 48kHz mono WAV from {os.path.basename(input_audio_path)}...")
+        prep_cmd = [
+            "ffmpeg", "-y", "-i", input_audio_path,
+            "-ac", "1", "-ar", "48000",
+            prep_48k_wav
+        ]
+        subprocess.run(prep_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+        # Step 2: Run DeepFilterNet CLI
+        print(f"🎙️ [DeepFilterNet] Enhancing audio speech clarity and removing background noise...")
+        df_cmd = [bin_path, "-o", df_out_dir, prep_48k_wav]
+        subprocess.run(df_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+        # Output file is at df_out_dir / basename(prep_48k_wav)
+        enhanced_wav = os.path.join(df_out_dir, os.path.basename(prep_48k_wav))
+        if not os.path.exists(enhanced_wav):
+            print("⚠️ DeepFilterNet output file not found. Falling back to original audio.")
+            return input_audio_path
+
+        # Step 3: Convert enhanced WAV to high-quality MP3 for AI pipelines
+        final_enhanced_path = os.path.join(task_dir, f"df_enhanced_{os.path.splitext(os.path.basename(input_audio_path))[0]}.mp3")
+
+        post_cmd = [
+            "ffmpeg", "-y", "-i", enhanced_wav,
+            "-b:a", "192k",
+            final_enhanced_path
+        ]
+        subprocess.run(post_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+        print(f"✨ [DeepFilterNet] Audio successfully enhanced and crystal clear: {os.path.basename(final_enhanced_path)}")
+        return final_enhanced_path
+
+    except Exception as e_df:
+        print(f"⚠️ DeepFilterNet enhancement warning ({e_df}). Using original audio.")
+        return input_audio_path
+    finally:
+        # Cleanup intermediate temporary files
+        if os.path.exists(prep_48k_wav):
+            try:
+                os.remove(prep_48k_wav)
+            except Exception:
+                pass
+        if os.path.exists(df_out_dir):
+            try:
+                shutil.rmtree(df_out_dir, ignore_errors=True)
+            except Exception:
+                pass
+
 def call_elevenlabs_scribe_sync(audio_path: str, api_key: str) -> dict:
     import requests
     import os
@@ -941,7 +1072,7 @@ async def correct_scribe_with_gemini(
     audio_ext: str,
     chunks: list[dict],
     openrouter_key: str,
-    model_name: str = "google/gemini-2.5-pro-preview-05-06"
+    model_name: str = "google/gemini-3.7-flash"
 ) -> tuple[list[dict], str]:
     if not openrouter_key or not openrouter_key.strip():
         orig_t = "\n".join(c["text"] for c in chunks)
@@ -956,7 +1087,7 @@ async def correct_scribe_with_gemini(
     import time
     import subprocess
 
-    target_model = (model_name or "").strip() or "google/gemini-2.5-pro-preview-05-06"
+    target_model = (model_name or "").strip() or "google/gemini-3.7-flash"
 
     # Prepare high-quality volume-boosted audio (+10dB gain boost, 44.1kHz 192k MP3) for OpenRouter
     boosted_audio_path = os.path.join(os.path.dirname(audio_path), f"temp_boosted_{int(time.time())}.mp3")
@@ -1370,13 +1501,17 @@ async def transcribe_media(
         effective_openrouter_key = (openrouterKey or "").strip() or get_system_key("openrouter") or os.environ.get("OPENROUTER_CORRECTOR_KEY", "").strip() or os.environ.get("OPENROUTER_API_KEY", "").strip()
         effective_gemini_key = (geminiApiKey or "").strip() or get_system_key("gemini") or os.environ.get("GEMINI_API_KEY", "").strip()
 
+        # Neural Audio Enhancement with DeepFilterNet (removes background noise, room reverb, and isolates crystal-clear voice)
+        ai_audio_path = enhance_audio_with_deepfilternet(audio_path, task_dir)
+        ai_audio_ext = os.path.splitext(ai_audio_path)[1] or audio_ext
+
         # If ElevenLabs Scribe V2 is requested
         if captionEngine == "v2" and effective_elevenlabs_key:
             try:
                 loop = asyncio.get_event_loop()
                 res_dict = await loop.run_in_executor(
                     None,
-                    lambda: call_elevenlabs_scribe_sync(audio_path, effective_elevenlabs_key)
+                    lambda: call_elevenlabs_scribe_sync(ai_audio_path, effective_elevenlabs_key)
                 )
                 raw_words = res_dict.get("words", [])
                 original_text = res_dict.get("text", "")
@@ -1407,13 +1542,13 @@ async def transcribe_media(
 
                 if openrouter_key:
                     try:
-                        print(f"[{task_id}] Initiating google/gemini-2.5-pro-preview-05-06 Audio Correction for Scribe...")
+                        print(f"[{task_id}] Initiating google/gemini-3.7-flash Audio Correction for Scribe with DeepFilterNet enhanced audio...")
                         final_chunks, audio_corrected_text = await correct_scribe_with_gemini(
-                            audio_path=audio_path,
-                            audio_ext=audio_ext,
+                            audio_path=ai_audio_path,
+                            audio_ext=ai_audio_ext,
                             chunks=chunks,
                             openrouter_key=openrouter_key,
-                            model_name="google/gemini-2.5-pro-preview-05-06"
+                            model_name="google/gemini-3.7-flash"
                         )
                     except Exception as scribe_corr_err:
                         print(f"⚠️ ElevenLabs Scribe Gemini audio correction warning: {scribe_corr_err}")
@@ -1444,7 +1579,7 @@ async def transcribe_media(
         if effective_groq_key:
             try:
                 chunks, duration, original_text, raw_subtitles, text_only_output, audio_corrected_output = await transcribe_with_groq_whisper(
-                    audio_path=audio_path,
+                    audio_path=ai_audio_path,
                     groq_api_key=effective_groq_key,
                     min_words=minWords,
                     max_words=maxWords,
@@ -1919,7 +2054,7 @@ async def correct_srt_with_cohere_text(all_words, chunks, cohere_text: str, req_
             f"[Whisper SRT]:\n{srt_content}"
         )
         
-        target_model = "google/gemini-2.5-pro-preview-05-06"
+        target_model = "google/gemini-3.7-flash"
         payload = {
             "model": target_model,
             "messages": [{"role": "user", "content": prompt}]
@@ -2227,7 +2362,7 @@ async def generate_video(
             )
             
             payload = {
-                "model": "google/gemini-2.5-pro-preview-05-06",
+                "model": "google/gemini-3.7-flash",
                 "messages": [
                     {
                         "role": "user",
@@ -2256,7 +2391,7 @@ async def generate_video(
             }
             
             # 4. Call OpenRouter API asynchronously
-            print(f"[{task_id}] Sending request to OpenRouter (google/gemini-2.5-pro-preview-05-06)...")
+            print(f"[{task_id}] Sending request to OpenRouter (google/gemini-3.7-flash)...")
             response_json = await asyncio.to_thread(call_openrouter_sync, payload, headers)
             
             # 5. Extract and clean the SRT output

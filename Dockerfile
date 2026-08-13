@@ -39,6 +39,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Pre-download DeepFilterNet CLI binary for neural speech enhancement
+RUN curl -fsSL -o /usr/local/bin/deep-filter https://github.com/Rikorose/DeepFilterNet/releases/download/v0.5.6/deep-filter-0.5.6-x86_64-unknown-linux-musl \
+    && chmod +x /usr/local/bin/deep-filter
+
 # Copy python requirements and install PyTorch CPU first, then rest
 COPY requirements.txt .
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu

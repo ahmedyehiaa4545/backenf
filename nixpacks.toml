@@ -1,0 +1,14 @@
+[phases.setup]
+nixPkgs = ["python311", "nodejs_20", "ffmpeg", "curl", "libsndfile"]
+
+[phases.install]
+cmds = [
+    "python -m pip install --upgrade pip",
+    "pip install torch --index-url https://download.pytorch.org/whl/cpu",
+    "pip install -r requirements.txt",
+    "npm install",
+    "npx remotion browser ensure"
+]
+
+[start]
+cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"
