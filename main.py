@@ -667,7 +667,7 @@ async def transcribe_with_groq_whisper(
 
         # MODE A: Multimodal Audio Listening & Speech Correction
         try:
-            print("🎧 Running google/gemini-2.5-pro-preview-05-06 WITH AUDIO LISTENING...")
+            print("🎧 Running google/gemini-3.7-flash WITH AUDIO LISTENING...")
             import base64
             with open(audio_path, "rb") as f_aud:
                 audio_b64 = base64.b64encode(f_aud.read()).decode("utf-8")
@@ -684,8 +684,9 @@ async def transcribe_with_groq_whisper(
 النص المفرغ المبدئي:
 {original_text}"""
 
+            target_model = "google/gemini-3.7-flash"
             req_data_audio = {
-                "model": "google/gemini-2.5-pro-preview-05-06",
+                "model": target_model,
                 "messages": [
                     {
                         "role": "user",
@@ -698,8 +699,6 @@ async def transcribe_with_groq_whisper(
                 "temperature": 0.1
             }
 
-            target_model = "google/gemini-2.5-pro-preview-05-06"
-            req_data_audio["model"] = target_model
             max_attempts = 4
             for attempt in range(1, max_attempts + 1):
                 try:
@@ -722,12 +721,12 @@ async def transcribe_with_groq_whisper(
 
         # MODE B: Text-Only Phrase Splitting (without audio)
         try:
-            print("📝 Running google/gemini-2.5-pro-preview-05-06 TEXT-ONLY...")
+            print("📝 Running google/gemini-3.7-flash TEXT-ONLY...")
             prompt_text = f"""أنت خبير في تقسيم السبترايتل. مهمتك الوحيدة: إدراج علامة "|" داخل النص لتقسيمه إلى مقاطع من {min_words} إلى {max_words} كلمات بالمعنى. ممنوع تغيير أو تعديل أي كلمة:
 {original_text}"""
 
             req_data_text = {
-                "model": "google/gemini-2.5-pro-preview-05-06",
+                "model": "google/gemini-3.7-flash",
                 "messages": [{"role": "user", "content": prompt_text}],
                 "temperature": 0.1
             }
@@ -942,7 +941,7 @@ async def correct_scribe_with_gemini(
     audio_ext: str,
     chunks: list[dict],
     openrouter_key: str,
-    model_name: str = "google/gemini-2.5-pro-preview-05-06"
+    model_name: str = "google/gemini-3.7-flash"
 ) -> tuple[list[dict], str]:
     if not openrouter_key or not openrouter_key.strip():
         orig_t = "\n".join(c["text"] for c in chunks)
@@ -957,7 +956,7 @@ async def correct_scribe_with_gemini(
     import time
     import subprocess
 
-    target_model = (model_name or "").strip() or "google/gemini-2.5-pro-preview-05-06"
+    target_model = (model_name or "").strip() or "google/gemini-3.7-flash"
 
     # Prepare high-quality volume-boosted audio (+10dB gain boost, 44.1kHz 192k MP3) for OpenRouter
     boosted_audio_path = os.path.join(os.path.dirname(audio_path), f"temp_boosted_{int(time.time())}.mp3")
@@ -1341,13 +1340,13 @@ async def transcribe_media(
 
                 if openrouter_key:
                     try:
-                        print(f"[{task_id}] Initiating google/gemini-2.5-pro-preview-05-06 Audio Correction for Scribe...")
+                        print(f"[{task_id}] Initiating google/gemini-3.7-flash Audio Correction for Scribe...")
                         final_chunks, audio_corrected_text = await correct_scribe_with_gemini(
                             audio_path=audio_path,
                             audio_ext=audio_ext,
                             chunks=chunks,
                             openrouter_key=openrouter_key,
-                            model_name="google/gemini-2.5-pro-preview-05-06"
+                            model_name="google/gemini-3.7-flash"
                         )
                     except Exception as scribe_corr_err:
                         print(f"⚠️ ElevenLabs Scribe Gemini audio correction warning: {scribe_corr_err}")
@@ -1853,7 +1852,7 @@ async def correct_srt_with_cohere_text(all_words, chunks, cohere_text: str, req_
             f"[Whisper SRT]:\n{srt_content}"
         )
         
-        target_model = "google/gemini-2.5-flash"
+        target_model = "google/gemini-3.7-flash"
         payload = {
             "model": target_model,
             "messages": [{"role": "user", "content": prompt}]
@@ -2161,7 +2160,7 @@ async def generate_video(
             )
             
             payload = {
-                "model": "google/gemini-2.5-pro-preview-05-06",
+                "model": "google/gemini-3.7-flash",
                 "messages": [
                     {
                         "role": "user",
@@ -2190,7 +2189,7 @@ async def generate_video(
             }
             
             # 4. Call OpenRouter API asynchronously
-            print(f"[{task_id}] Sending request to OpenRouter (google/gemini-2.5-pro-preview-05-06)...")
+            print(f"[{task_id}] Sending request to OpenRouter (google/gemini-3.7-flash)...")
             response_json = await asyncio.to_thread(call_openrouter_sync, payload, headers)
             
             # 5. Extract and clean the SRT output
