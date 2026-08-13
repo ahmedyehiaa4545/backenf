@@ -75,7 +75,10 @@ const buildCaptionTextStyle = (
   };
 };
 
-// ClassicAnimation component: traditional style with no motion, simple outline stroke
+// Helper: Detect if word contains Latin/English characters to render in isolated LTR flow
+const isEnglishOrLatinWord = (str: string): boolean => /[a-zA-Z]/.test(str);
+
+// ClassicAnimation component: word-by-word active color pop (instant)
 const ClassicAnimation: React.FC<{
   segment: CaptionSegment;
   currentTime: number;
@@ -106,12 +109,15 @@ const ClassicAnimation: React.FC<{
         const isActive = currentTime >= w.start && currentTime <= w.end;
         const color = isActive ? (activeColor || '#FFFFFF') : (inactiveColor || '#FFFFFF');
         const computedStyle = buildCaptionTextStyle(color, strokeColor, strokeWidth, shadowColor, shadowBlur);
+        const isEng = isEnglishOrLatinWord(w.word);
 
         return (
           <span
             key={index}
+            dir={isEng ? 'ltr' : 'rtl'}
             style={{
               display: 'inline-block',
+              unicodeBidi: 'isolate',
               ...computedStyle,
             }}
           >
@@ -155,6 +161,7 @@ const RevealAnimation: React.FC<{
         const isPast = currentTime > w.end;
         const color = isActive ? (activeColor || '#FFFFFF') : (inactiveColor || '#FFFFFF');
         const computedStyle = buildCaptionTextStyle(color, strokeColor, strokeWidth, shadowColor, shadowBlur);
+        const isEng = isEnglishOrLatinWord(w.word);
         
         let translateY = 0;
         let opacity = 1;
@@ -182,8 +189,10 @@ const RevealAnimation: React.FC<{
         return (
           <span
             key={index}
+            dir={isEng ? 'ltr' : 'rtl'}
             style={{
               display: 'inline-block',
+              unicodeBidi: 'isolate',
               ...computedStyle,
               transform: `translateY(${translateY}px)`,
               opacity,
@@ -251,12 +260,15 @@ const SlideAnimation: React.FC<{
           const isActive = currentTime >= w.start && currentTime <= w.end;
           const color = isActive ? (activeColor || '#FFFFFF') : (inactiveColor || '#FFFFFF');
           const computedStyle = buildCaptionTextStyle(color, strokeColor, strokeWidth, shadowColor, shadowBlur);
+          const isEng = isEnglishOrLatinWord(w.word);
 
           return (
             <span
               key={index}
+              dir={isEng ? 'ltr' : 'rtl'}
               style={{
                 display: 'inline-block',
+                unicodeBidi: 'isolate',
                 ...computedStyle,
               }}
             >
