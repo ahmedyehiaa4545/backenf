@@ -340,11 +340,11 @@ const TitleOverlay: React.FC<{
   }
 
   const getSplitFontSize = (str: string) => {
-    if (str.length <= 15) return '52px';
-    if (str.length <= 22) return '42px';
-    if (str.length <= 30) return '34px';
-    if (str.length <= 40) return '28px';
-    return '24px';
+    if (str.length <= 16) return '56px';
+    if (str.length <= 25) return '48px';
+    if (str.length <= 36) return '42px';
+    if (str.length <= 48) return '36px';
+    return '32px';
   };
 
   return (
@@ -370,15 +370,16 @@ const TitleOverlay: React.FC<{
       {titleStyle === 'split-contrast' ? (
         <div
           style={{
-            display: 'flex',
+            display: 'inline-flex',
             flexDirection: 'column',
-            width: '92%',
-            maxWidth: '920px',
+            width: 'auto',
+            minWidth: '380px',
+            maxWidth: '92%',
             margin: '0 auto',
-            boxShadow: '0 14px 40px rgba(0,0,0,0.75)',
-            borderRadius: '4px',
+            boxShadow: '0 18px 50px rgba(0,0,0,0.85)',
+            borderRadius: '6px',
             overflow: 'hidden',
-            alignItems: 'center',
+            alignItems: 'stretch',
             justifyContent: 'center',
           }}
         >
@@ -390,7 +391,7 @@ const TitleOverlay: React.FC<{
               fontFamily,
               fontWeight: 900,
               fontSize: getSplitFontSize(splitLine1),
-              padding: '10px 20px',
+              padding: '14px 28px',
               textAlign: 'center',
               lineHeight: 1.3,
               width: '100%',
@@ -413,7 +414,7 @@ const TitleOverlay: React.FC<{
                 fontFamily,
                 fontWeight: 900,
                 fontSize: getSplitFontSize(splitLine2),
-                padding: '10px 20px',
+                padding: '14px 28px',
                 textAlign: 'center',
                 lineHeight: 1.3,
                 width: '100%',
