@@ -2168,7 +2168,7 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             json.dump(request_data.model_dump(), f, ensure_ascii=False, indent=2)
             
         output_video_path = os.path.join(task_dir, "output.mp4")
-        print(f"[{task_id}] Rendering video with user edits (concurrency=5)...")
+        print(f"[{task_id}] Rendering video with user edits (concurrency=5, max speed)...")
         
         render_cmd = [
             "npx", "remotion", "render",
@@ -2177,12 +2177,14 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             output_video_path,
             "--props", props_path,
             "--concurrency=5",
+            "--gl=swangle",
+            "--offthreadvideo-cache-size-in-bytes=134217728",
             "--jpeg-quality=70",
             "--log=error",
-            "--browser-args=--no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --disable-extensions --disable-background-timer-throttling --disable-backgrounding-occluded-windows"
+            "--browser-args=--no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --disable-extensions --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-setuid-sandbox --js-flags=--max-old-space-size=4096"
         ]
         
-        render_env = {**os.environ, "REMOTION_DISABLE_TELEMETRY": "1"}
+        render_env = {**os.environ, "REMOTION_DISABLE_TELEMETRY": "1", "NODE_OPTIONS": "--max-old-space-size=4096"}
         process = await asyncio.create_subprocess_exec(
             *render_cmd,
             stdout=subprocess.PIPE,

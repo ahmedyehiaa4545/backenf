@@ -4,6 +4,8 @@ FROM python:3.11-slim
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+ENV REMOTION_DISABLE_TELEMETRY=1
 
 # Set working directory
 WORKDIR /app
