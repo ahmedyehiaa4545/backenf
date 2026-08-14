@@ -2168,7 +2168,7 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             json.dump(request_data.model_dump(), f, ensure_ascii=False, indent=2)
             
         output_video_path = os.path.join(task_dir, "output.mp4")
-        print(f"[{task_id}] Rendering video with user edits (concurrency=6)...")
+        print(f"[{task_id}] Rendering video with user edits (concurrency=5)...")
         
         render_cmd = [
             "npx", "remotion", "render",
@@ -2176,8 +2176,8 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             "CaptionsVideo",
             output_video_path,
             "--props", props_path,
-            "--concurrency=6",
-            "--jpeg-quality=60",
+            "--concurrency=5",
+            "--jpeg-quality=70",
             "--log=error",
             "--browser-args=--no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --disable-extensions --disable-background-timer-throttling --disable-backgrounding-occluded-windows"
         ]
