@@ -62,6 +62,9 @@ RUN npx remotion browser ensure
 # Copy all project files
 COPY . .
 
+# Pre-bundle Remotion composition for instant zero-compile rendering
+RUN npx remotion bundle src/index.ts --out-dir=build/bundle
+
 # Create public folder if not exists
 RUN mkdir -p public
 

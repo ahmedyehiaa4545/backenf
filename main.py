@@ -2170,16 +2170,20 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
         output_video_path = os.path.join(task_dir, "output.mp4")
         print(f"[{task_id}] Rendering video with user edits (concurrency=5, max speed)...")
         
+        # Use pre-bundled directory if available, otherwise fallback to src/index.ts
+        bundle_dir = os.path.abspath("build/bundle")
+        remotion_entry = bundle_dir if os.path.exists(bundle_dir) else "src/index.ts"
+
         render_cmd = [
             "npx", "remotion", "render",
-            "src/index.ts",
+            remotion_entry,
             "CaptionsVideo",
             output_video_path,
             "--props", props_path,
-            "--concurrency=5",
+            "--concurrency=4",
             "--gl=swangle",
             "--offthreadvideo-cache-size-in-bytes=134217728",
-            "--jpeg-quality=70",
+            "--jpeg-quality=75",
             "--log=error",
             "--browser-args=--no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --disable-extensions --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-setuid-sandbox --js-flags=--max-old-space-size=4096"
         ]
@@ -2486,14 +2490,18 @@ async def generate_video(
         output_video_path = os.path.join(task_dir, "output.mp4")
         print(f"[{task_id}] Rendering video...")
         
+        # Use pre-bundled directory if available, otherwise fallback to src/index.ts
+        bundle_dir = os.path.abspath("build/bundle")
+        remotion_entry = bundle_dir if os.path.exists(bundle_dir) else "src/index.ts"
+
         # Build rendering command
         render_cmd = [
             "npx", "remotion", "render",
-            "src/index.ts",
+            remotion_entry,
             "CaptionsVideo",
             output_video_path,
             "--props", props_path,
-            "--concurrency=2",
+            "--concurrency=4",
             "--browser-args=--no-sandbox"
         ]
         
