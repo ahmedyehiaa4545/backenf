@@ -2168,15 +2168,11 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             json.dump(request_data.model_dump(), f, ensure_ascii=False, indent=2)
             
         output_video_path = os.path.join(task_dir, "output.mp4")
-        print(f"[{task_id}] Rendering video with user edits (concurrency=5, max speed)...")
+        print(f"[{task_id}] Rendering video with user edits (concurrency=4, max speed)...")
         
-        # Use pre-bundled directory if available, otherwise fallback to src/index.ts
-        bundle_dir = os.path.abspath("build/bundle")
-        remotion_entry = bundle_dir if os.path.exists(bundle_dir) else "src/index.ts"
-
         render_cmd = [
             "npx", "remotion", "render",
-            remotion_entry,
+            "src/index.ts",
             "CaptionsVideo",
             output_video_path,
             "--props", props_path,
@@ -2490,14 +2486,10 @@ async def generate_video(
         output_video_path = os.path.join(task_dir, "output.mp4")
         print(f"[{task_id}] Rendering video...")
         
-        # Use pre-bundled directory if available, otherwise fallback to src/index.ts
-        bundle_dir = os.path.abspath("build/bundle")
-        remotion_entry = bundle_dir if os.path.exists(bundle_dir) else "src/index.ts"
-
         # Build rendering command
         render_cmd = [
             "npx", "remotion", "render",
-            remotion_entry,
+            "src/index.ts",
             "CaptionsVideo",
             output_video_path,
             "--props", props_path,
