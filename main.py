@@ -2212,7 +2212,7 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             return
             
         print(f"[{task_id}] Render completed successfully!")
-        RENDER_TASKS[task_id] = {"status": "success", "videoUrl": f"api/render-download/{task_id}"}
+        RENDER_TASKS[task_id] = {"status": "success", "videoUrl": f"public/temp_{task_id}/output.mp4"}
     except Exception as e:
         print(f"[{task_id}] Unexpected render error: {str(e)}")
         RENDER_TASKS[task_id] = {"status": "failed", "error": str(e)}
@@ -2241,7 +2241,7 @@ async def get_render_status(task_id: str):
     return RENDER_TASKS[task_id]
 
 @app.get("/api/render-download/{task_id}")
-async def download_rendered_video(task_id: str, background_tasks: BackgroundTasks):
+async def download_rendered_video(task_id: str):
     public_dir = os.path.abspath("public")
     task_dir = os.path.join(public_dir, f"temp_{task_id}")
     output_video_path = os.path.join(task_dir, "output.mp4")
@@ -2249,14 +2249,6 @@ async def download_rendered_video(task_id: str, background_tasks: BackgroundTask
     if not os.path.exists(output_video_path):
         raise HTTPException(status_code=404, detail="Video not found")
         
-    background_tasks.add_task(clean_temp_dir, task_dir)
-    # Also clean up the task state after a delay to avoid memory leak
-    async def remove_task_state():
-        await asyncio.sleep(60)
-        if task_id in RENDER_TASKS:
-            del RENDER_TASKS[task_id]
-    background_tasks.add_task(remove_task_state)
-    
     return FileResponse(
         output_video_path,
         media_type="video/mp4",
@@ -2900,6 +2892,34 @@ async def buffer_get_channels(payload: dict):
             raise e
         raise HTTPException(500, f"Failed to connect to Buffer: {str(e)}")
 
+@app.post("/api/buffer/upload-media")
+async def buffer_upload_media(file: UploadFile = File(...)):
+    """Uploads a video blob/file directly to the server's public folder and returns its permanent HTTPS public URL"""
+    try:
+        upload_id = str(uuid.uuid4())
+        public_dir = os.path.abspath("public")
+        task_dir = os.path.join(public_dir, f"buffer_{upload_id}")
+        os.makedirs(task_dir, exist_ok=True)
+        
+        file_ext = os.path.splitext(file.filename or "")[1] or ".mp4"
+        out_filename = f"video{file_ext}"
+        target_path = os.path.join(task_dir, out_filename)
+        
+        with open(target_path, "wb") as f_out:
+            shutil.copyfileobj(file.file, f_out)
+        
+        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+        if domain:
+            public_url = f"https://{domain}/public/buffer_{upload_id}/{out_filename}"
+        else:
+            public_url = f"https://rekaption2-production.up.railway.app/public/buffer_{upload_id}/{out_filename}"
+            
+        print(f"✅ Uploaded media for Buffer: {public_url} ({os.path.getsize(target_path)} bytes)", flush=True)
+        return {"status": "success", "videoUrl": public_url}
+    except Exception as e:
+        print(f"❌ Failed to upload media for Buffer: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Failed to upload media: {str(e)}")
+
 @app.post("/api/buffer/create-post")
 async def buffer_create_post(req: BufferPostRequest):
     api_key = req.apiKey or os.environ.get("BUFFER_API_KEY")
@@ -2913,6 +2933,26 @@ async def buffer_create_post(req: BufferPostRequest):
         "Authorization": f"Bearer {api_key.strip()}",
         "Content-Type": "application/json"
     }
+
+    # Smart URL Fixer & Resolution
+    video_url = req.videoUrl.strip()
+    
+    # 1. Replace broken legacy typo domain
+    video_url = video_url.replace("backenf-production.up.railway.app", "rekaption2-production.up.railway.app")
+    
+    # 2. If relative path, prepend current domain
+    current_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    domain_prefix = f"https://{current_domain}" if current_domain else "https://rekaption2-production.up.railway.app"
+    
+    if video_url.startswith("public/") or video_url.startswith("/public/"):
+        rel = video_url.lstrip("/")
+        video_url = f"{domain_prefix}/{rel}"
+    elif "localhost" in video_url or "127.0.0.1" in video_url:
+        if "public/" in video_url:
+            rel = "public/" + video_url.split("public/", 1)[1]
+            video_url = f"{domain_prefix}/{rel}"
+            
+    print(f"🚀 Buffer Create Post: video URL = {video_url}", flush=True)
 
     # Auto-resolve channelId if not supplied
     channel_id = req.channelId
@@ -2947,7 +2987,7 @@ async def buffer_create_post(req: BufferPostRequest):
         "assets": [
             {
                 "video": {
-                    "url": req.videoUrl
+                    "url": video_url
                 }
             }
         ]
