@@ -2806,6 +2806,142 @@ def get_system_keys_api(token: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ==================== Zernio Social Media Posting & TikTok Scheduler API ====================
+
+class ZernioScheduleRequest(BaseModel):
+    apiKey: str
+    content: str
+    videoUrl: str
+    publishNow: bool = False
+    scheduledFor: str | None = None
+    accountId: str | None = None
+    platform: str = "tiktok"
+
+@app.post("/api/zernio/accounts")
+@app.post("/api/zernio/profiles")
+async def zernio_get_accounts(payload: dict):
+    api_key = payload.get("apiKey") or os.environ.get("ZERNIO_API_KEY")
+    if not api_key:
+        raise HTTPException(400, "Zernio API Key is required.")
+    
+    headers = {
+        "Authorization": f"Bearer {api_key.strip()}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        res = requests.get("https://zernio.com/api/v1/accounts", headers=headers, timeout=20)
+        if res.status_code == 200:
+            return res.json()
+    except Exception:
+        pass
+
+    try:
+        res_prof = requests.get("https://zernio.com/api/v1/profiles", headers=headers, timeout=20)
+        if res_prof.status_code == 200:
+            return res_prof.json()
+        raise HTTPException(res_prof.status_code, f"Zernio API Error: {res_prof.text}")
+    except Exception as e:
+        if isinstance(e, HTTPException): raise e
+        raise HTTPException(500, f"Failed to connect to Zernio: {str(e)}")
+
+@app.post("/api/zernio/schedule-post")
+async def zernio_schedule_post(req: ZernioScheduleRequest):
+    api_key = req.apiKey or os.environ.get("ZERNIO_API_KEY")
+    if not api_key:
+        raise HTTPException(400, "Zernio API Key is required.")
+
+    if not req.videoUrl:
+        raise HTTPException(400, "Video URL is required for TikTok posting.")
+
+    try:
+        headers = {
+            "Authorization": f"Bearer {api_key.strip()}",
+            "Content-Type": "application/json",
+            "x-request-id": str(uuid.uuid4())
+        }
+
+        # Auto-resolve accountId if not supplied
+        account_id = req.accountId
+        if not account_id:
+            try:
+                acc_res = requests.get("https://zernio.com/api/v1/accounts", headers=headers, timeout=15)
+                if acc_res.status_code == 200:
+                    acc_data = acc_res.json()
+                    accounts_list = acc_data.get("accounts") or acc_data.get("data") or (acc_data if isinstance(acc_data, list) else [])
+                    for acc in accounts_list:
+                        if acc.get("platform") == req.platform:
+                            account_id = acc.get("_id") or acc.get("id") or acc.get("accountId")
+                            break
+                        if not account_id:
+                            account_id = acc.get("_id") or acc.get("id") or acc.get("accountId")
+                
+                if not account_id:
+                    prof_res = requests.get("https://zernio.com/api/v1/profiles", headers=headers, timeout=15)
+                    if prof_res.status_code == 200:
+                        prof_data = prof_res.json()
+                        profiles_list = prof_data.get("profiles") or (prof_data if isinstance(prof_data, list) else [])
+                        if profiles_list:
+                            account_id = profiles_list[0].get("_id") or profiles_list[0].get("id")
+            except Exception as e:
+                print(f"Failed to auto-resolve accountId: {e}", flush=True)
+
+        if not account_id:
+            raise HTTPException(400, "لم يتم العثور على معرف الحساب (accountId). يرجى التأكد من ربط حساب TikTok داخل لوحة تحكم Zernio.")
+
+        platform_entry = {
+            "platform": req.platform,
+            "accountId": account_id
+        }
+
+        post_body = {
+            "content": req.content,
+            "platforms": [platform_entry],
+            "media": [
+                {
+                    "type": "video",
+                    "url": req.videoUrl
+                }
+            ],
+            "publishNow": req.publishNow
+        }
+
+        if req.scheduledFor and not req.publishNow:
+            post_body["scheduledFor"] = req.scheduledFor
+            post_body["isDraft"] = False
+
+        res = requests.post("https://zernio.com/api/v1/posts", headers=headers, json=post_body, timeout=30)
+        if res.status_code not in [200, 201]:
+            raise HTTPException(res.status_code, f"Zernio Post Error: {res.text}")
+
+        return {
+            "status": "success",
+            "message": "تم إرسال الفيديو لـ TikTok بنجاح!" if req.publishNow else "تمت جدولة الفيديو على TikTok بنجاح!",
+            "data": res.json()
+        }
+    except Exception as e:
+        if isinstance(e, HTTPException): raise e
+        raise HTTPException(500, f"Error posting to Zernio: {str(e)}")
+
+@app.post("/api/zernio/posts")
+async def zernio_list_posts(payload: dict):
+    api_key = payload.get("apiKey") or os.environ.get("ZERNIO_API_KEY")
+    if not api_key:
+        raise HTTPException(400, "Zernio API Key is required.")
+
+    try:
+        headers = {
+            "Authorization": f"Bearer {api_key.strip()}",
+            "Content-Type": "application/json"
+        }
+        res = requests.get("https://zernio.com/api/v1/posts", headers=headers, timeout=20)
+        if res.status_code != 200:
+            raise HTTPException(res.status_code, f"Zernio API Error: {res.text}")
+        return res.json()
+    except Exception as e:
+        if isinstance(e, HTTPException): raise e
+        raise HTTPException(500, f"Failed to list posts from Zernio: {str(e)}")
+
 # Serve public folder for previewing uploaded media files
 public_dir_path = os.path.abspath("public")
 os.makedirs(public_dir_path, exist_ok=True)
