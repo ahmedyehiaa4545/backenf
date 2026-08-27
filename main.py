@@ -654,90 +654,103 @@ async def transcribe_with_groq_whisper(
     original_text = " ".join(w["clean_word"] for w in words_data)
     print(f"✅ Groq extracted {len(words_data)} words. Text length: {len(original_text)} chars.")
 
-    # 2. AI Smart Processing with google/gemini-2.5-pro-preview-05-06 (Audio-Listening Mode)
+    # 2. Google Gemini Audio Listening & Speech Correction (استماع للصوت وتصحيح الكلمات واللهجة)
     effective_api_key = openrouter_key or gemini_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMINI_API_KEY")
     
     if effective_api_key and not skip_correction:
-        headers = {
-            "Authorization": f"Bearer {effective_api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://rekaption.hf.space/",
-            "X-Title": "ReKaption Subtitle Processor"
-        }
-
-        # MODE A: Multimodal Audio Listening & Speech Correction
-        try:
-            print("🎧 Running google/gemini-3.7-flash WITH AUDIO LISTENING...")
-            import base64
-            with open(audio_path, "rb") as f_aud:
-                audio_b64 = base64.b64encode(f_aud.read()).decode("utf-8")
-
-            prompt_audio = f"""أنت خبير محترف في التدقيق اللغوي للترجمات وتقسيمها (Subtitles).
-قم بالاستماع بتركيز شديد للملف الصوتي المرفق، وراجع النص أدناه:
+        prompt_audio = f"""أنت خبير محترف في التدقيق اللغوي للترجمات وتقسيمها (Subtitles) والاستماع الصوتي المباشر.
+قم بالاستماع بتركيز شديد للملف الصوتي المرفق، وراجع النص المفرغ أدناه:
 
 مهمتك الرئيسية:
 1. استمع للصوت المرفق، وقم بتصحيح أي كلمة مفرغة ليكون النص مطابقاً تماماً لنطق الصوت المسموع دون تغيير لهجة المتحدث (مثال: 'من هالعائلة' اتركها بنطقها المسموع ولا تحولها لفصحى مثل 'من هذه العائلة').
 2. احذف فوراً أي كلمات غير مكتملة أو تأتأة أو مقاطع مكررة أو شرطات مكسورة (مثل 'اااا'، 'الـ'، 'ال ال'، 'في ال في ال'، 'لـ'، والشرطات '--').
-3. أدخل علامة "|" لتقسيم الكلمات إلى مقاطع سياقية قصيرة (من {min_words} إلى {max_words} كلمات كحد أقصى لكل مقطع).
-4. أخرج النص المصلح والمقسم فقط في سطر واحد مفصولاً بعلامات "|".
+3. التنوين: أي كلمة منونة سمعتها في الصوت اكتب تنوين الفتح (ـاً) عليها بشكل دقيق (شكراً، جداً، طبعاً، دائماً، مثلاً، أهلاً، مرحباً).
+4. أدخل علامة "|" لتقسيم الكلمات إلى مقاطع سياقية قصيرة (من {min_words} إلى {max_words} كلمات كحد أقصى لكل مقطع).
+5. أخرج النص المصلح والمقسم فقط في سطر واحد مفصولاً بعلامات "|".
 
 النص المفرغ المبدئي:
 {original_text}"""
 
-            target_model = "google/gemini-3.7-flash"
-            req_data_audio = {
-                "model": target_model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt_audio},
-                            {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "mp3"}}
-                        ]
-                    }
-                ],
-                "temperature": 0.1
-            }
+        clean_gemini_key = (gemini_key or "").strip()
+        clean_openrouter_key = (openrouter_key or "").strip()
 
-            max_attempts = 4
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    print(f"🎧 OpenRouter Audio Listening attempt {attempt}/{max_attempts} with model {target_model}...")
-                    resp_aud = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_audio, timeout=120)
-                    if resp_aud.status_code == 200:
-                        content = resp_aud.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-                        if content and content.strip():
-                            audio_corrected_output = content.strip()
-                            audio_corrected_output = re.sub(r"\|+", "|", audio_corrected_output.replace("\r", "|").replace("\n", "|")).strip("| ")
-                            print(f"✅ Audio Listening output generated with {target_model} on attempt {attempt} ({len(audio_corrected_output)} chars).")
-                            break
-                        else:
-                            print(f"⚠️ OpenRouter returned empty content on attempt {attempt}/{max_attempts} for model {target_model}. Retrying same model...")
-                except Exception as e_m:
-                    print(f"⚠️ OpenRouter request error on attempt {attempt}/{max_attempts} for model {target_model}: {e_m}")
-                time.sleep(1.5)
-        except Exception as e_aud:
-            print(f"⚠️ Audio listening mode warning: {e_aud}")
+        # المسار الأول: إرسال الصوت مباشرة لمحرك Google Gemini الرسمي (سرعة فائقة 2-3 ثوانٍ)
+        if clean_gemini_key.startswith("AIzaSy") or (clean_gemini_key and not clean_gemini_key.startswith("sk-")):
+            try:
+                print("🎧 Running Direct Google Gemini Audio-Listening (gemini-2.5-flash)...")
+                import google.generativeai as genai
+                genai.configure(api_key=clean_gemini_key)
+                g_model = genai.GenerativeModel("gemini-2.5-flash")
+                
+                with open(audio_path, "rb") as f_aud:
+                    aud_bytes = f_aud.read()
+                
+                audio_part = {
+                    "mime_type": "audio/mp3",
+                    "data": aud_bytes
+                }
+                g_res = g_model.generate_content([prompt_audio, audio_part])
+                if g_res and g_res.text:
+                    audio_corrected_output = g_res.text.strip()
+                    audio_corrected_output = re.sub(r"\|+", "|", audio_corrected_output.replace("\r", "|").replace("\n", "|")).strip("| ")
+                    print(f"✨ Direct Google Gemini Audio-Listening Correction Success ({len(audio_corrected_output)} chars)!")
+            except Exception as e_direct:
+                print(f"⚠️ Direct Google Gemini audio correction notice: {e_direct}")
 
-        # MODE B: Text-Only Phrase Splitting (without audio)
-        try:
-            print("📝 Running google/gemini-3.7-flash TEXT-ONLY...")
-            prompt_text = f"""أنت خبير في تقسيم السبترايتل. مهمتك الوحيدة: إدراج علامة "|" داخل النص لتقسيمه إلى مقاطع من {min_words} إلى {max_words} كلمات بالمعنى. ممنوع تغيير أو تعديل أي كلمة:
-{original_text}"""
+        # المسار الثاني: إرسال الصوت لـ OpenRouter بنموذج Google Gemini 3.7 Flash
+        if not audio_corrected_output and effective_api_key:
+            try:
+                print("🎧 Running OpenRouter Google Gemini Audio-Listening (google/gemini-3.7-flash)...")
+                import base64
+                with open(audio_path, "rb") as f_aud:
+                    audio_b64 = base64.b64encode(f_aud.read()).decode("utf-8")
 
-            req_data_text = {
-                "model": "google/gemini-3.7-flash",
-                "messages": [{"role": "user", "content": prompt_text}],
-                "temperature": 0.1
-            }
+                req_data_audio = {
+                    "model": "google/gemini-3.7-flash",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt_audio},
+                                {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "mp3"}}
+                            ]
+                        }
+                    ],
+                    "temperature": 0.1
+                }
+                headers = {
+                    "Authorization": f"Bearer {effective_api_key.strip()}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://rekaption.com",
+                    "X-Title": "ReKaption"
+                }
+                resp_aud = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_audio, timeout=35)
+                if resp_aud.status_code == 200:
+                    content = resp_aud.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                    if content and content.strip():
+                        audio_corrected_output = content.strip()
+                        audio_corrected_output = re.sub(r"\|+", "|", audio_corrected_output.replace("\r", "|").replace("\n", "|")).strip("| ")
+                        print(f"✨ OpenRouter Audio-Listening Correction Success with google/gemini-3.7-flash ({len(audio_corrected_output)} chars)!")
+            except Exception as e_or:
+                print(f"⚠️ OpenRouter audio listening notice: {e_or}")
 
-            resp_txt = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_text, timeout=60)
-            if resp_txt.status_code == 200:
-                text_only_output = resp_txt.json()["choices"][0]["message"]["content"].strip()
-                text_only_output = re.sub(r"\|+", "|", text_only_output.replace("\r", "|").replace("\n", "|")).strip("| ")
-                print(f"✅ Text-Only output generated ({len(text_only_output)} chars).")
-        except Exception as e_txt:
-            print(f"⚠️ Text-only mode warning: {e_txt}")
+        # المسار الاحتياطي: تقسيم نصي فائق السرعة إذا تعثر استقبال الصوت
+        if not audio_corrected_output:
+            try:
+                print("📝 Fast Text-Only Phrase Splitting fallback...")
+                prompt_text = f"""أدخل علامة "|" فقط لتقسيم النص إلى مقاطع سياقية من {min_words} إلى {max_words} كلمات دون تغيير أي كلمة:\n{original_text}"""
+                req_data_text = {
+                    "model": "google/gemini-3.7-flash",
+                    "messages": [{"role": "user", "content": prompt_text}],
+                    "temperature": 0.1
+                }
+                headers = {"Authorization": f"Bearer {effective_api_key.strip()}", "Content-Type": "application/json"}
+                resp_txt = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_text, timeout=10)
+                if resp_txt.status_code == 200:
+                    text_only_output = resp_txt.json()["choices"][0]["message"]["content"].strip()
+                    text_only_output = re.sub(r"\|+", "|", text_only_output.replace("\r", "|").replace("\n", "|")).strip("| ")
+            except Exception as e_txt:
+                pass
 
     # Determine segment counts and apply Gemini Audio Listening corrected words to subtitles
     segment_counts = []
@@ -1501,8 +1514,11 @@ async def transcribe_media(
         effective_openrouter_key = (openrouterKey or "").strip() or get_system_key("openrouter") or os.environ.get("OPENROUTER_CORRECTOR_KEY", "").strip() or os.environ.get("OPENROUTER_API_KEY", "").strip()
         effective_gemini_key = (geminiApiKey or "").strip() or get_system_key("gemini") or os.environ.get("GEMINI_API_KEY", "").strip()
 
-        # Neural Audio Enhancement with DeepFilterNet (removes background noise, room reverb, and isolates crystal-clear voice)
-        ai_audio_path = enhance_audio_with_deepfilternet(audio_path, task_dir)
+        # Neural Audio Enhancement with DeepFilterNet (only if explicitly requested via env to keep transcription blazing fast < 2s)
+        if os.environ.get("ENABLE_DEEPFILTERNET") == "1" and not isBatchMode:
+            ai_audio_path = enhance_audio_with_deepfilternet(audio_path, task_dir)
+        else:
+            ai_audio_path = audio_path
         ai_audio_ext = os.path.splitext(ai_audio_path)[1] or audio_ext
 
         # If ElevenLabs Scribe V2 is requested
