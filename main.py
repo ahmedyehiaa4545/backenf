@@ -3072,8 +3072,8 @@ async def buffer_create_post(req: BufferPostRequest):
             rel = "public/" + video_url.split("public/", 1)[1]
             video_url = f"{domain_prefix}/{rel}"
 
-    cld_name = (req.cloudinaryCloudName or os.environ.get("CLOUDINARY_CLOUD_NAME") or "").strip()
-    cld_preset = (req.cloudinaryUploadPreset or os.environ.get("CLOUDINARY_UPLOAD_PRESET") or "").strip()
+    cld_name = (getattr(req, "cloudinaryCloudName", None) or os.environ.get("CLOUDINARY_CLOUD_NAME") or "").strip()
+    cld_preset = (getattr(req, "cloudinaryUploadPreset", None) or os.environ.get("CLOUDINARY_UPLOAD_PRESET") or "").strip()
 
     # If video_url is an endpoint (e.g. /api/render-download) or we have Cloudinary credentials, fetch, optimize, and upload to Cloudinary!
     if "/api/render-download/" in video_url or not any(video_url.lower().split("?")[0].endswith(ext) for ext in [".mp4", ".mov", ".webm", ".m4v"]) or (cld_name and cld_preset and not video_url.startswith("https://res.cloudinary.com")):
