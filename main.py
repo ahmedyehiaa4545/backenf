@@ -2176,10 +2176,10 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             "CaptionsVideo",
             output_video_path,
             "--props", props_path,
-            "--concurrency=4",
+            "--concurrency=2",
             "--gl=swangle",
-            "--offthreadvideo-cache-size-in-bytes=134217728",
-            "--jpeg-quality=75",
+            "--offthreadvideo-cache-size-in-bytes=268435456",
+            "--jpeg-quality=80",
             "--log=error",
             "--browser-args=--no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --disable-extensions --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-setuid-sandbox --js-flags=--max-old-space-size=4096"
         ]
