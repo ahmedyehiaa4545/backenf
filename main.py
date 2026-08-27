@@ -2809,6 +2809,8 @@ class BufferPostRequest(BaseModel):
     publishNow: bool = False
     scheduledFor: str | None = None
     saveToDraft: bool = False
+    cloudinaryCloudName: str | None = None
+    cloudinaryUploadPreset: str | None = None
 
 @app.post("/api/buffer/channels")
 async def buffer_get_channels(payload: dict):
@@ -2943,10 +2945,10 @@ def upload_to_public_cdn(file_path: str) -> str:
 
     return ""
 
-def upload_to_cloudinary(file_path: str) -> str:
+def upload_to_cloudinary(file_path: str, cloud_name: str = None, preset: str = None) -> str:
     """Uploads video to Cloudinary if env variables or parameters are configured"""
-    cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME")
-    preset = os.environ.get("CLOUDINARY_UPLOAD_PRESET")
+    cloud_name = cloud_name or os.environ.get("CLOUDINARY_CLOUD_NAME")
+    preset = preset or os.environ.get("CLOUDINARY_UPLOAD_PRESET")
     api_key = os.environ.get("CLOUDINARY_API_KEY")
     api_secret = os.environ.get("CLOUDINARY_API_SECRET")
     
@@ -2974,6 +2976,8 @@ def upload_to_cloudinary(file_path: str) -> str:
                 if sec_url:
                     print(f"🌟 Cloudinary Video Upload Success: {sec_url}", flush=True)
                     return sec_url
+            else:
+                print(f"Cloudinary upload HTTP {res.status_code}: {res.text}", flush=True)
     except Exception as e:
         print(f"Cloudinary upload notice: {e}", flush=True)
     return ""
@@ -3068,10 +3072,13 @@ async def buffer_create_post(req: BufferPostRequest):
             rel = "public/" + video_url.split("public/", 1)[1]
             video_url = f"{domain_prefix}/{rel}"
 
-    # If video_url is an endpoint (e.g. /api/render-download) or does not end with a direct video extension, fetch and host it statically
-    if "/api/render-download/" in video_url or not any(video_url.lower().split("?")[0].endswith(ext) for ext in [".mp4", ".mov", ".webm", ".m4v"]):
+    cld_name = (req.cloudinaryCloudName or os.environ.get("CLOUDINARY_CLOUD_NAME") or "").strip()
+    cld_preset = (req.cloudinaryUploadPreset or os.environ.get("CLOUDINARY_UPLOAD_PRESET") or "").strip()
+
+    # If video_url is an endpoint (e.g. /api/render-download) or we have Cloudinary credentials, fetch, optimize, and upload to Cloudinary!
+    if "/api/render-download/" in video_url or not any(video_url.lower().split("?")[0].endswith(ext) for ext in [".mp4", ".mov", ".webm", ".m4v"]) or (cld_name and cld_preset and not video_url.startswith("https://res.cloudinary.com")):
         try:
-            print(f"📥 Fetching video from {video_url} to host direct static MP4 for Buffer...", flush=True)
+            print(f"📥 Processing video from {video_url} for Buffer (Cloudinary: {bool(cld_name and cld_preset)})...", flush=True)
             dl_res = requests.get(video_url, timeout=60, stream=True)
             if dl_res.status_code == 200:
                 upload_id = str(uuid.uuid4())
@@ -3085,8 +3092,17 @@ async def buffer_create_post(req: BufferPostRequest):
                             f_out.write(chunk)
                     f_out.flush()
                     os.fsync(f_out.fileno())
-                video_url = f"{domain_prefix}/public/buffer_{upload_id}/video.mp4"
-                print(f"✅ Created direct static MP4 for Buffer: {video_url} ({os.path.getsize(target_path)} bytes)", flush=True)
+                ensure_faststart_mp4(target_path)
+
+                if cld_name and cld_preset:
+                    cld_url = upload_to_cloudinary(target_path, cld_name, cld_preset)
+                    if cld_url:
+                        video_url = cld_url
+                        print(f"🌟 Successfully uploaded to Cloudinary: {video_url}", flush=True)
+
+                if not video_url.startswith("https://res.cloudinary.com"):
+                    video_url = f"{domain_prefix}/public/buffer_{upload_id}/video.mp4"
+                print(f"✅ Ready MP4 for Buffer: {video_url} ({os.path.getsize(target_path)} bytes)", flush=True)
         except Exception as dl_err:
             print(f"⚠️ Stream caching fallback warning: {dl_err}", flush=True)
             
