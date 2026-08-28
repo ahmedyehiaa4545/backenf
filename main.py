@@ -2814,42 +2814,68 @@ class BufferGraphQLProxyReq(BaseModel):
 class BufferChannelsProxyReq(BaseModel):
     token: str
 
+class BufferGraphQLProxyReq(BaseModel):
+    token: Optional[str] = None
+    bufferToken: Optional[str] = None
+    query: str
+    variables: Optional[Dict[str, Any]] = None
+
+class BufferChannelsProxyReq(BaseModel):
+    token: Optional[str] = None
+    bufferToken: Optional[str] = None
+
 class BufferPublishProxyReq(BaseModel):
-    token: str
-    channel_id: str
-    video_url: str
-    text: str
-    scheduled_at: str = None
-    is_now: bool = True
+    token: Optional[str] = None
+    bufferToken: Optional[str] = None
+    channelId: Optional[str] = None
+    channel_id: Optional[str] = None
+    videoUrl: Optional[str] = None
+    video_url: Optional[str] = None
+    text: Optional[str] = ""
+    scheduledAt: Optional[str] = None
+    scheduled_at: Optional[str] = None
+    isNow: Optional[bool] = None
+    is_now: Optional[bool] = None
 
 @app.post("/api/buffer/graphql")
 def buffer_graphql_proxy(req: BufferGraphQLProxyReq):
-    if not req.token:
+    token = (req.token or req.bufferToken or "").strip()
+    if not token:
+        print("[BUFFER GRAPHQL PROXY] ❌ Missing Buffer Token", flush=True)
         raise HTTPException(status_code=400, detail="Buffer token is required")
     try:
+        print(f"[BUFFER GRAPHQL PROXY] 📡 Sending GraphQL query to Buffer...", flush=True)
         res = requests.post(
             "https://api.buffer.com",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {req.token.strip()}"
+                "Authorization": f"Bearer {token}"
             },
             json={"query": req.query, "variables": req.variables or {}},
             timeout=30
         )
+        print(f"[BUFFER GRAPHQL PROXY] 📥 Buffer HTTP Status: {res.status_code}", flush=True)
         return res.json()
     except Exception as e:
+        print(f"[BUFFER GRAPHQL PROXY] ❌ Error: {str(e)}", flush=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/buffer/channels")
 def buffer_channels_proxy(req: BufferChannelsProxyReq):
-    if not req.token:
+    token = (req.token or req.bufferToken or "").strip()
+    print(f"\n=======================================================", flush=True)
+    print(f"[BUFFER PROXY] 🔍 [FETCH CHANNELS] Token: {token[:6]}...{token[-4:] if len(token) > 10 else ''}", flush=True)
+
+    if not token:
+        print(f"[BUFFER PROXY] ❌ Buffer token is missing!", flush=True)
+        print(f"=======================================================\n", flush=True)
         raise HTTPException(status_code=400, detail="Buffer token is required")
-    
+
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {req.token.strip()}"
+        "Authorization": f"Bearer {token}"
     }
-    
+
     # 1. Get Organizations
     org_query = """
     query GetOrganizations {
@@ -2863,15 +2889,21 @@ def buffer_channels_proxy(req: BufferChannelsProxyReq):
     """
     try:
         res = requests.post("https://api.buffer.com", headers=headers, json={"query": org_query}, timeout=30)
+        print(f"[BUFFER PROXY] 🏢 GetOrganizations HTTP Status: {res.status_code}", flush=True)
         data = res.json()
         if "errors" in data and len(data["errors"]) > 0:
             err_msg = data["errors"][0].get("message", "Buffer API error")
+            print(f"[BUFFER PROXY] ❌ GetOrganizations Error: {err_msg}", flush=True)
+            print(f"=======================================================\n", flush=True)
             return {"channels": [], "error": err_msg, "status": "error"}
-        
+
         orgs = data.get("data", {}).get("account", {}).get("organizations", [])
+        print(f"[BUFFER PROXY] 🏢 Found {len(orgs)} organizations: {[o.get('name') for o in orgs]}", flush=True)
         if not orgs:
+            print(f"[BUFFER PROXY] ⚠️ No organizations found in Buffer account", flush=True)
+            print(f"=======================================================\n", flush=True)
             return {"channels": [], "error": "No organizations found in Buffer account", "status": "empty"}
-        
+
         # 2. Get Channels for each organization
         chan_query = """
         query GetChannels($input: ChannelsInput!) {
@@ -2906,16 +2938,37 @@ def buffer_channels_proxy(req: BufferChannelsProxyReq):
                     "avatar": ch.get("avatar") or "",
                     "organizationName": org.get("name")
                 })
-        
+
+        print(f"[BUFFER PROXY] 📺 Total Channels Found: {len(all_channels)} -> {[(c['service'], c['name']) for c in all_channels]}", flush=True)
+        print(f"=======================================================\n", flush=True)
         return {"channels": all_channels, "status": "success"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[BUFFER PROXY] ❌ Exception in GetChannels: {str(e)}", flush=True)
+        print(f"=======================================================\n", flush=True)
+        return {"channels": [], "error": str(e), "status": "error"}
 
 @app.post("/api/buffer/publish")
 def buffer_publish_proxy(req: BufferPublishProxyReq):
-    if not req.token or not req.channel_id or not req.video_url:
-        raise HTTPException(status_code=400, detail="Missing required parameters")
-    
+    token = (req.token or req.bufferToken or "").strip()
+    channel_id = (req.channelId or req.channel_id or "").strip()
+    video_url = (req.videoUrl or req.video_url or "").strip()
+    text = req.text or ""
+    is_now = req.isNow if req.isNow is not None else (req.is_now if req.is_now is not None else True)
+    scheduled_at = req.scheduledAt or req.scheduled_at
+
+    print(f"\n=======================================================", flush=True)
+    print(f"[BUFFER PROXY] 🚀 [NEW PUBLISH / SCHEDULE REQUEST]", flush=True)
+    print(f"[BUFFER PROXY] 📺 Channel ID: {channel_id}", flush=True)
+    print(f"[BUFFER PROXY] ⚡ Mode: {'SHARE NOW (⚡ نشر فوري)' if is_now else f'CUSTOM SCHEDULED (📅 جدولة) at {scheduled_at}'}", flush=True)
+    print(f"[BUFFER PROXY] ☁️ Video Asset URL: {video_url}", flush=True)
+    print(f"[BUFFER PROXY] 📝 Post Caption ({len(text)} chars):\n---\n{text}\n---", flush=True)
+
+    if not token or not channel_id or not video_url:
+        err_msg = f"Missing required fields: token={'OK' if token else 'MISSING'}, channelId={'OK' if channel_id else 'MISSING'}, videoUrl={'OK' if video_url else 'MISSING'}"
+        print(f"[BUFFER PROXY] ❌ ERROR: {err_msg}", flush=True)
+        print(f"=======================================================\n", flush=True)
+        raise HTTPException(status_code=400, detail=err_msg)
+
     mutation = """
     mutation CreatePost($input: CreatePostInput!) {
       createPost(input: $input) {
@@ -2924,6 +2977,7 @@ def buffer_publish_proxy(req: BufferPublishProxyReq):
             id
             dueAt
             status
+            text
           }
         }
         ... on MutationError {
@@ -2935,41 +2989,67 @@ def buffer_publish_proxy(req: BufferPublishProxyReq):
       }
     }
     """
-    input_payload = {
-        "channelId": req.channel_id.strip(),
-        "text": req.text,
-        "schedulingType": "automatic",
-        "mode": "shareNow" if req.is_now else "customScheduled",
-        "assets": {
-            "video": {
-                "url": req.video_url
-            }
-        }
-    }
-    if not req.is_now and req.scheduled_at:
-        input_payload["dueAt"] = req.scheduled_at
 
+    input_payload = {
+        "channelId": channel_id,
+        "text": text,
+        "schedulingType": "automatic",
+        "mode": "shareNow" if is_now else "customScheduled",
+        "assets": [
+            {
+                "video": {
+                    "url": video_url
+                }
+            }
+        ]
+    }
+
+    if not is_now and scheduled_at:
+        try:
+            if scheduled_at.endswith('Z') or '+' in scheduled_at:
+                input_payload["dueAt"] = scheduled_at
+            else:
+                input_payload["dueAt"] = f"{scheduled_at}:00.000Z"
+        except Exception:
+            input_payload["dueAt"] = str(scheduled_at)
+
+    print(f"[BUFFER PROXY] 📡 Sending mutation to Buffer API...", flush=True)
     try:
         res = requests.post(
             "https://api.buffer.com",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {req.token.strip()}"
+                "Authorization": f"Bearer {token}"
             },
             json={"query": mutation, "variables": {"input": input_payload}},
-            timeout=30
+            timeout=45
         )
+        print(f"[BUFFER PROXY] 📥 Buffer API HTTP Status: {res.status_code}", flush=True)
+        print(f"[BUFFER PROXY] 📥 Buffer API Raw Response: {res.text}", flush=True)
+
         data = res.json()
         if "errors" in data and len(data["errors"]) > 0:
-            return {"status": "error", "error": data["errors"][0].get("message", "Buffer mutation error")}
-        
+            err_msg = data["errors"][0].get("message", "Buffer mutation error")
+            print(f"[BUFFER PROXY] ❌ Buffer GraphQL Error: {err_msg}", flush=True)
+            print(f"=======================================================\n", flush=True)
+            return {"status": "error", "error": err_msg}
+
         post_data = data.get("data", {}).get("createPost", {})
         if "message" in post_data:
-            return {"status": "error", "error": post_data["message"]}
-        
-        return {"status": "success", "post": post_data.get("post", {})}
+            err_msg = post_data["message"]
+            print(f"[BUFFER PROXY] ❌ Buffer Mutation Error: {err_msg}", flush=True)
+            print(f"=======================================================\n", flush=True)
+            return {"status": "error", "error": err_msg}
+
+        post_obj = post_data.get("post", {})
+        print(f"[BUFFER PROXY] 🎉 SUCCESS! Post Created on Buffer: {post_obj}", flush=True)
+        print(f"=======================================================\n", flush=True)
+        return {"status": "success", "post": post_obj}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[BUFFER PROXY] ❌ Exception during Buffer request: {str(e)}", flush=True)
+        print(f"=======================================================\n", flush=True)
+        return {"status": "error", "error": str(e)}
 
 # Serve public folder for previewing uploaded media files
 public_dir_path = os.path.abspath("public")
