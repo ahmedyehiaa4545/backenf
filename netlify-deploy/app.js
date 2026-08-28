@@ -191,7 +191,7 @@ const outputVideo = document.getElementById('output-video');
 const downloadLink = document.getElementById('download-link');
 let apiUrl = window.location.origin.includes('hf.space')
   ? window.location.origin
-  : 'https://rekaption2-production.up.railway.app';
+  : 'https://backenf-production.up.railway.app';
 let audioApiUrl = 'https://youtube-audio-backend-production-a2d5.up.railway.app';
 const apiUrlInput = document.getElementById('api-url');
 if (apiUrlInput) {
@@ -212,6 +212,20 @@ if (!visitorId) {
 
 // ==================== Firebase Firestore Persistent System ====================
 let isSuspended = false;
+
+window.ensureUserAuthenticated = function() {
+  if (isSuspended) {
+    const suspModal = document.getElementById('suspended-modal');
+    if (suspModal) suspModal.style.display = 'flex';
+    return false;
+  }
+  if (!currentUser) {
+    const loginModal = document.getElementById('login-prompt-modal');
+    if (loginModal) loginModal.style.display = 'flex';
+    return false;
+  }
+  return true;
+};
 
 async function syncUserWithFirestore(user) {
   if (!window.firebaseDb) {
@@ -1407,14 +1421,7 @@ document.getElementById('editor-segments').addEventListener('keydown', function(
 formControls.addEventListener('submit', async function(e) {
   e.preventDefault();
 
-  if (isSuspended) {
-    document.getElementById('suspended-modal').style.display = 'flex';
-    return;
-  }
-
-  // Check visitor limit before allowing submission
-  if (!currentUser && freeOpsCount >= 2) {
-    document.getElementById('login-prompt-modal').style.display = 'flex';
+  if (!window.ensureUserAuthenticated()) {
     return;
   }
 
@@ -1526,6 +1533,11 @@ formControls.addEventListener('submit', async function(e) {
     const data = await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', apiUrl + '/api/transcribe');
+      xhr.timeout = 300000; // 5 minutes timeout for long video AI processing
+
+      xhr.ontimeout = function() {
+        reject(new Error('استغرقت معالجة الملف وقتاً طويلاً. يرجى المحاولة مرة أخرى أو تقليل حجم المقطع.'));
+      };
 
       xhr.upload.onprogress = function(event) {
         if (event.lengthComputable) {
@@ -1591,6 +1603,24 @@ formControls.addEventListener('submit', async function(e) {
 
     transcribeData = data;
     
+    // Apply Gemini audio-corrected text to segments if available
+    if (transcribeData.audioCorrectedText && transcribeData.audioCorrectedText.trim()) {
+      const correctedLines = transcribeData.audioCorrectedText.trim().split('\n').map(l => l.trim()).filter(l => l);
+      if (correctedLines.length === transcribeData.segments.length) {
+        transcribeData.segments = transcribeData.segments.map((seg, i) => {
+          const newText = correctedLines[i];
+          const words = newText.split(/\s+/).filter(w => w.trim() !== '');
+          const duration = seg.end - seg.start;
+          const newWords = words.map((w, wi) => ({
+            word: w,
+            start: parseFloat((seg.start + (wi * duration) / Math.max(1, words.length)).toFixed(3)),
+            end: parseFloat((seg.start + ((wi + 1) * duration) / Math.max(1, words.length)).toFixed(3))
+          }));
+          return { ...seg, text: newText, words: newWords };
+        });
+      }
+    }
+    
     // Hide main dashboard, show editor workspace
     document.getElementById('main-dashboard').classList.add('hidden');
     document.getElementById('editor-state').classList.remove('hidden');
@@ -1635,14 +1665,7 @@ window.renderVideo = async function() {
   if (isRendering) return;
   if (!transcribeData) return;
 
-  if (isSuspended) {
-    document.getElementById('suspended-modal').style.display = 'flex';
-    return;
-  }
-
-  // Check visitor limit before allowing rendering
-  if (!currentUser && freeOpsCount >= 2) {
-    document.getElementById('login-prompt-modal').style.display = 'flex';
+  if (!window.ensureUserAuthenticated()) {
     return;
   }
   
@@ -1704,7 +1727,7 @@ window.renderVideo = async function() {
     fontSize: parseInt(document.getElementById('font-size').value) || 50,
     bgColor: document.getElementById('bg-color').value,
     bgOpacity: parseFloat(document.getElementById('bg-opacity').value) || 86,
-    syncOffset: parseFloat(document.getElementById('sync-offset').value) || 0.20,
+    syncOffset: parseFloat(document.getElementById('sync-offset') ? document.getElementById('sync-offset').value : 0),
     wordSpacing: parseInt(document.getElementById('word-spacing').value) || 31,
     bgPadding: parseInt(document.getElementById('bg-padding').value) || 8,
     showBg: !document.getElementById('show-bg').checked,
@@ -1721,13 +1744,13 @@ window.renderVideo = async function() {
     titleSubtext: '',
     titleColor: document.getElementById('title-color-input') ? document.getElementById('title-color-input').value : '#FFFFFF',
     titleBgColor: document.getElementById('title-bg-color-input') ? document.getElementById('title-bg-color-input').value : '#000000',
-    titleDuration: document.getElementById('title-duration-input') ? parseFloat(document.getElementById('title-duration-input').value) : 3.0,
+    titleDuration: document.getElementById('title-duration-input') ? parseFloat(document.getElementById('title-duration-input').value) : 6.5,
     titleTop: document.getElementById('title-top-input') ? parseFloat(document.getElementById('title-top-input').value) : 20.0,
     titleStyle: document.getElementById('title-style-select') ? document.getElementById('title-style-select').value : 'tiktok-pill'
   };
   
   try {
-    const res = await fetch(`${apiUrl}/api/render/${transcribeData.taskId}`, {
+    const startRes = await fetch(`${apiUrl}/api/render/${transcribeData.taskId}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1735,22 +1758,37 @@ window.renderVideo = async function() {
       body: JSON.stringify(renderPayload)
     });
     
-    clearInterval(renderIntervalId);
-    
-    if (!res.ok) {
-      let detail = 'حدث خطأ في معالجة الفيديو في السيرفر';
+    if (!startRes.ok) {
+      let detail = 'حدث خطأ في طلب الرندرة من السيرفر';
       try {
-        const json = await res.json();
+        const json = await startRes.json();
         detail = json.detail || detail;
       } catch(_) {}
       throw new Error(detail);
     }
     
+    let renderStatus = 'processing';
+    let renderTaskStatus;
+    while (renderStatus === 'processing') {
+      await new Promise(r => setTimeout(r, 3000));
+      const statusRes = await fetch(`${apiUrl}/api/render-status/${transcribeData.taskId}`);
+      if (!statusRes.ok) throw new Error('فشل الاتصال لمتابعة حالة الرندرة');
+      renderTaskStatus = await statusRes.json();
+      renderStatus = renderTaskStatus.status;
+      if (renderStatus === 'failed') {
+         throw new Error(renderTaskStatus.error || 'فشلت عملية الرندرة');
+      }
+    }
+    
+    clearInterval(renderIntervalId);
+    
     progressBarFill.style.width = '98%';
     progressTextLabel.textContent = 'جاري تنزيل الفيديو المكتمل...';
     progressMsg.textContent = 'جاري تنزيل الفيديو المكتمل...';
     
-    const blob = await res.blob();
+    const downloadRes = await fetch(`${apiUrl.replace(/\/$/, '')}/${renderTaskStatus.videoUrl}`);
+    if (!downloadRes.ok) throw new Error('فشل تنزيل الفيديو المكتمل');
+    const blob = await downloadRes.blob();
     const url = URL.createObjectURL(blob);
     
     progressBarFill.style.width = '100%';
@@ -1758,16 +1796,26 @@ window.renderVideo = async function() {
     
     outputVideo.src = url;
     downloadLink.href = url;
+    window.lastRenderedVideoBlob = blob;
+    window.lastRenderedVideoUrl = url;
     showState(successState);
     playSuccessSound();
 
     // Auto-save to 48-Hour Video Archive (Persistent IndexedDB + LocalStorage)
-    if (typeof saveHistoryEntry === 'function') {
-      saveHistoryEntry({
-        title: 'فيديو كابشن نهائي (' + new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) + ')',
-        videoUrl: url,
-        blob: blob
-      });
+    if (typeof window.saveHistoryEntry === 'function') {
+      try {
+        const fullServerUrl = renderTaskStatus && renderTaskStatus.videoUrl 
+          ? `${apiUrl.replace(/\/$/, '')}/${renderTaskStatus.videoUrl.replace(/^\//, '')}`
+          : '';
+        await window.saveHistoryEntry({
+          title: 'فيديو كابشن نهائي (' + new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) + ')',
+          videoUrl: url,
+          serverUrl: fullServerUrl,
+          blob: blob
+        });
+      } catch (saveErr) {
+        console.warn('Auto-save main render to archive error:', saveErr);
+      }
     }
 
     // Track render event
@@ -1855,18 +1903,13 @@ function updateAuthWidget() {
       </button>
     `;
   } else {
-    const remaining = Math.max(0, 2 - freeOpsCount);
     widget.innerHTML = `
-      <div style="font-size: 12px; color: var(--text-muted); display: flex; flex-direction: column; align-items: flex-start;">
-        <span style="font-weight: 600;">الوضع المجاني (زائر)</span>
-        <span style="font-size: 10px;">العمليات المتبقية: ${remaining}/2</span>
-      </div>
       <button 
         type="button" 
         onclick="triggerGoogleLogin()" 
-        style="margin: 0; padding: 8px 16px; font-size: 13px; border-radius: 20px; color: #fff; background: linear-gradient(135deg, #4285F4, #34A853); border: none; cursor: pointer; display: flex; align-items: center; gap: 6px; font-weight: 600;"
+        style="margin: 0; padding: 8px 18px; font-size: 13px; border-radius: 20px; color: #fff; background: linear-gradient(135deg, #4285F4, #34A853); border: none; cursor: pointer; display: flex; align-items: center; gap: 8px; font-weight: 700; box-shadow: 0 4px 15px rgba(66, 133, 244, 0.3);"
       >
-        <span>🌐</span> الدخول بجوجل
+        <span>🌐</span> تسجيل الدخول بحساب Google
       </button>
     `;
   }
@@ -2182,11 +2225,26 @@ window.startVerticalConversion = async function() {
     }
 
     lastConvertedBlob = await videoBlobRes.blob();
+    window.lastConvertedBlob = lastConvertedBlob;
     const localVideoUrl = URL.createObjectURL(lastConvertedBlob);
 
     videoPlayer.src = localVideoUrl;
     downloadBtn.href = localVideoUrl;
     resultContainer.classList.remove('hidden');
+
+    // Auto-save vertical converted video to 48-Hour Video Archive
+    if (typeof window.saveHistoryEntry === 'function') {
+      try {
+        await window.saveHistoryEntry({
+          title: 'فيديو طولي (9:16) (' + new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) + ')',
+          videoUrl: localVideoUrl,
+          serverUrl: videoUrl,
+          blob: lastConvertedBlob
+        });
+      } catch (saveErr) {
+        console.warn('Auto-save vertical converter to archive error:', saveErr);
+      }
+    }
 
   } catch (err) {
     console.error(err);
@@ -2242,6 +2300,10 @@ window.startAudioDownloadOnly = async function() {
   const audioLink = document.getElementById('downloaded-audio-link');
   const transcriptionContainer = document.getElementById('transcription-container');
   const transcriptionText = document.getElementById('transcription-text');
+
+  if (!window.ensureUserAuthenticated()) {
+    return;
+  }
 
   const youtubeUrl = urlInput.value.trim();
 
@@ -2464,7 +2526,7 @@ window.fetchShortsSuggestions = async function() {
   
   const numShorts = parseInt(document.getElementById('gemini-shorts-count').value) || 3;
   const openrouterModelInput = document.getElementById('openrouter-model-input');
-  const openrouterModel = openrouterModelInput ? openrouterModelInput.value.trim() : "google/gemini-2.5-pro-preview-05-06";
+  const openrouterModel = openrouterModelInput ? openrouterModelInput.value.trim() : "google/gemini-3.7-flash";
   const customPromptInput = document.getElementById('gemini-custom-prompt');
   const customPrompt = customPromptInput ? customPromptInput.value.trim() : "";
   const titleStyleSelect = document.getElementById('gemini-title-style');
@@ -2636,27 +2698,45 @@ window.fetchShortsSuggestions = async function() {
               <span>تحديد</span>
             </label>
 
-            <!-- Time Chip -->
+            <!-- Category & Time Row -->
             <div style="
               display: flex;
               align-items: center;
-              gap: 6px;
-              font-size: 12px;
-              font-weight: 700;
-              color: var(--purple-accent);
+              justify-content: space-between;
+              flex-wrap: wrap;
+              gap: 8px;
               margin-top: 5px;
             ">
-              <span>⏱️ التوقيت:</span>
-              <span style="
-                background: rgba(139, 92, 246, 0.1);
-                border: 1px solid rgba(139, 92, 246, 0.3);
-                padding: 2px 8px;
-                border-radius: 6px;
-                font-family: monospace;
-                font-size: 13px;
-              ">
-                ${short.start_time} - ${short.end_time}
-              </span>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="
+                  background: rgba(168, 85, 247, 0.15);
+                  border: 1px solid rgba(168, 85, 247, 0.4);
+                  padding: 3px 8px;
+                  border-radius: 6px;
+                  font-size: 11px;
+                  font-weight: 700;
+                  color: #c084fc;
+                ">
+                  ${short.category || '🎯 قصة وخلاصة مكتملة'}
+                </span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--purple-accent);">
+                <span>⏱️ التوقيت:</span>
+                <span style="
+                  background: rgba(139, 92, 246, 0.15);
+                  border: 1px solid rgba(139, 92, 246, 0.4);
+                  padding: 3px 10px;
+                  border-radius: 6px;
+                  font-family: monospace;
+                  font-size: 13px;
+                  direction: ltr;
+                  display: inline-block;
+                  color: #c084fc;
+                  font-weight: 700;
+                ">
+                  ${short.start_time} ➔ ${short.end_time}
+                </span>
+              </div>
             </div>
 
             <!-- Title -->
@@ -2702,7 +2782,7 @@ window.fetchShortsSuggestions = async function() {
 
             <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
               <!-- Send to Captions Phase Button (Full Width Primary) -->
-              <button type="button" onclick="cutAndSendToCaptions('${escapedYtUrl}', '${short.start_time}', '${short.end_time}', ${idx + 1}, this)" class="btn-primary" style="
+              <button type="button" onclick="cutAndSendToCaptions('${escapedYtUrl}', '${short.start_time}', '${short.end_time}', ${idx}, this)" class="btn-primary" style="
                 width: 100%;
                 padding: 10px 14px;
                 font-size: 13px;
@@ -2794,7 +2874,7 @@ async function performAsyncCut(youtubeUrl, startTime, endTime, quality, onProgre
         url: youtubeUrl,
         start_time: startTime,
         end_time: endTime,
-        quality: quality || 720
+        quality: quality || 1080
       })
     });
   } catch (netErr) {
@@ -3026,17 +3106,20 @@ window.cutAndSendToCaptions = function(youtubeUrl, startTime, endTime, idx, btn)
     return;
   }
 
+  // Ensure idx is valid 0-based index
+  const arrayIdx = (typeof idx === 'number' && idx >= 0 && idx < currentSuggestedShorts.length) ? idx : 0;
+
   if (rememberedShortChoice) {
-    executeCutAndSendToCaptions(youtubeUrl, startTime, endTime, idx, btn, rememberedShortChoice);
+    executeCutAndSendToCaptions(youtubeUrl, startTime, endTime, arrayIdx, btn, rememberedShortChoice);
     return;
   }
 
-  pendingShortArgs = { youtubeUrl, startTime, endTime, idx, btn };
+  pendingShortArgs = { youtubeUrl, startTime, endTime, idx: arrayIdx, btn };
   pendingBatchProcess = false;
   pendingBatchArgs = null;
 
-  // Prefill title input and toggle title ON
-  const shortItem = currentSuggestedShorts[idx];
+  // Prefill title input with THIS short's exact title and toggle title ON
+  const shortItem = currentSuggestedShorts[arrayIdx];
   const suggestedTitle = shortItem ? shortItem.title : '';
   const titleTextInput = document.getElementById('title-text-input');
   if (titleTextInput) {
@@ -3073,15 +3156,28 @@ window.cutAndSendToCaptions = function(youtubeUrl, startTime, endTime, idx, btn)
 
 
 async function executeCutAndSendToCaptions(youtubeUrl, startTime, endTime, idx, btn, convertChoice) {
+  if (!window.ensureUserAuthenticated()) {
+    return;
+  }
   const originalHtml = btn.innerHTML;
   btn.disabled = true;
   btn.style.opacity = '0.6';
   btn.style.pointerEvents = 'none';
   btn.innerHTML = '<span>⏳</span> جاري قص المقطع...';
 
+  const effectiveYtUrl = youtubeUrl || document.getElementById('gemini-yt-url')?.value?.trim() || '';
+  if (!effectiveYtUrl) {
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.style.pointerEvents = 'auto';
+    btn.innerHTML = originalHtml;
+    alert('رابط اليوتيوب غير متوفر لقص المقطع!');
+    return;
+  }
+
   try {
     // Step 1: Perform Async Cut from YouTube
-    let blob = await performAsyncCut(youtubeUrl, startTime, endTime, 720, (progText) => {
+    let blob = await performAsyncCut(effectiveYtUrl, startTime, endTime, 1080, (progText) => {
       btn.innerHTML = `<span>⏳</span> ${progText}`;
     });
 
@@ -3167,6 +3263,14 @@ async function executeCutAndSendToCaptions(youtubeUrl, startTime, endTime, idx, 
       formElement.scrollIntoView({ behavior: 'smooth' });
     }
 
+    // Ensure title input has THIS exact short's title before submitting
+    const arrayIdx = (typeof idx === 'number' && idx >= 0 && idx < currentSuggestedShorts.length) ? idx : 0;
+    const currentShort = currentSuggestedShorts[arrayIdx];
+    if (currentShort && currentShort.title) {
+      const titleTextInput = document.getElementById('title-text-input');
+      if (titleTextInput) titleTextInput.value = currentShort.title;
+    }
+
     // Enable submitBtn explicitly and trigger form submission
     const submitBtn = document.getElementById('submit-btn');
     if (submitBtn) {
@@ -3204,6 +3308,9 @@ window.processBatchCaption = async function() {
 
   const batchBtn = document.getElementById('batch-caption-btn');
   const originalBtnHtml = batchBtn ? batchBtn.innerHTML : '';
+  if (!window.ensureUserAuthenticated()) {
+    return;
+  }
   if (batchBtn) {
     batchBtn.disabled = true;
     batchBtn.style.opacity = '0.6';
@@ -3221,7 +3328,7 @@ window.processBatchCaption = async function() {
 
     try {
       // 1. Cut audio/video segment
-      let blob = await performAsyncCut(ytUrl, short.start_time, short.end_time, 720);
+      let blob = await performAsyncCut(ytUrl, short.start_time, short.end_time, 1080);
 
       // 2. Convert to vertical (9:16)
       if (batchBtn) {
@@ -3290,7 +3397,7 @@ window.processBatchCaption = async function() {
       if (short.title) fd.append('titleText', short.title);
       fd.append('titleColor', document.getElementById('title-color-input') ? document.getElementById('title-color-input').value : '#FFFFFF');
       fd.append('titleBgColor', document.getElementById('title-bg-color-input') ? document.getElementById('title-bg-color-input').value : '#000000');
-      fd.append('titleDuration', document.getElementById('title-duration-input') ? document.getElementById('title-duration-input').value : '3.0');
+      fd.append('titleDuration', document.getElementById('title-duration-input') ? document.getElementById('title-duration-input').value : '6.5');
       fd.append('titleTop', document.getElementById('title-top-input') ? document.getElementById('title-top-input').value : '12.0');
       fd.append('titleStyle', document.getElementById('title-style-select') ? document.getElementById('title-style-select').value : 'tiktok-pill');
       
@@ -3311,19 +3418,9 @@ window.processBatchCaption = async function() {
       const openrouterKeyVal = orInput ? orInput.value.trim() : savedOrKey;
       if (openrouterKeyVal) fd.append('openrouterKey', openrouterKeyVal);
 
-      // Use the MAIN apiUrl (HF backend) for transcription, NOT audioApiUrl
+      // Use the MAIN apiUrl for transcription with async polling to prevent browser timeouts
       fd.append('isBatchMode', 'true');
-      const transRes = await fetch(`${apiUrl}/api/transcribe`, {
-        method: 'POST',
-        body: fd
-      });
-
-      if (!transRes.ok) {
-        const errDetail = await transRes.json().catch(() => ({ detail: 'فشل التفريغ' }));
-        throw new Error(`فشل تفريغ المقطع #${sIdx + 1}: ${errDetail.detail || transRes.status}`);
-      }
-
-      const transData = await transRes.json();
+      const transData = await transcribeMediaWithPolling(fd);
 
       // 4. Render video using MAIN apiUrl
       if (batchBtn) {
@@ -3342,7 +3439,7 @@ window.processBatchCaption = async function() {
         fontSize: document.getElementById('font-size') ? parseInt(document.getElementById('font-size').value) : 50,
         bgColor: document.getElementById('bg-color') ? document.getElementById('bg-color').value : '#000000',
         bgOpacity: document.getElementById('bg-opacity') ? parseFloat(document.getElementById('bg-opacity').value) : 86,
-        syncOffset: Math.max(0, (document.getElementById('sync-offset') ? parseFloat(document.getElementById('sync-offset').value) : 0.20) - 0.15),
+        syncOffset: parseFloat(document.getElementById('sync-offset') ? document.getElementById('sync-offset').value : 0),
         wordSpacing: document.getElementById('word-spacing') ? parseInt(document.getElementById('word-spacing').value) : 31,
         bgPadding: document.getElementById('bg-padding') ? parseInt(document.getElementById('bg-padding').value) : 8,
         showBg: document.getElementById('show-bg') ? !document.getElementById('show-bg').checked : true,
@@ -3364,27 +3461,53 @@ window.processBatchCaption = async function() {
         titleStyle: document.getElementById('title-style-select') ? document.getElementById('title-style-select').value : 'tiktok-pill'
       };
 
-      const renderRes = await fetch(`${apiUrl}/api/render/${transData.taskId}`, {
+      const startRes = await fetch(`${apiUrl}/api/render/${transData.taskId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(renderPayload)
       });
 
-      if (!renderRes.ok) {
-        const errDetail = await renderRes.json().catch(() => ({ detail: 'فشل الرندر' }));
-        throw new Error(`فشل رندرة المقطع #${sIdx + 1}: ${errDetail.detail || renderRes.status}`);
+      if (!startRes.ok) {
+        const errDetail = await startRes.json().catch(() => ({ detail: 'فشل بدء الرندر' }));
+        throw new Error(`فشل رندرة المقطع #${sIdx + 1}: ${errDetail.detail || startRes.status}`);
       }
 
-      const finalVideoBlob = await renderRes.blob();
+      let renderStatus = 'processing';
+      let renderTaskStatus;
+      while (renderStatus === 'processing') {
+        await new Promise(r => setTimeout(r, 3000));
+        const statusRes = await fetch(`${apiUrl}/api/render-status/${transData.taskId}`);
+        if (!statusRes.ok) throw new Error(`فشل متابعة رندرة المقطع #${sIdx + 1}`);
+        renderTaskStatus = await statusRes.json();
+        renderStatus = renderTaskStatus.status;
+        if (renderStatus === 'failed') {
+           throw new Error(`فشل رندرة المقطع #${sIdx + 1}: ` + (renderTaskStatus.error || 'خطأ مجهول'));
+        }
+      }
+
+      const downloadRes = await fetch(`${apiUrl.replace(/\/$/, '')}/${renderTaskStatus.videoUrl}`);
+      if (!downloadRes.ok) throw new Error(`فشل تنزيل المقطع #${sIdx + 1}`);
+      const finalVideoBlob = await downloadRes.blob();
       const finalUrl = URL.createObjectURL(finalVideoBlob);
 
-      // 5. Save automatically to 48h Archive!
-      if (typeof saveHistoryEntry === 'function') {
-        await saveHistoryEntry({
-          title: `🎬 ${short.title} (${short.start_time} - ${short.end_time})`,
-          videoUrl: finalUrl,
-          blob: finalVideoBlob
-        });
+      // 5. Save automatically to 48h Archive IMMEDIATELY!
+      if (typeof window.saveHistoryEntry === 'function') {
+        try {
+          await window.saveHistoryEntry({
+            title: `🎬 ${short.title} (${short.start_time} - ${short.end_time})`,
+            videoUrl: finalUrl,
+            serverUrl: `${apiUrl.replace(/\/$/, '')}/${renderTaskStatus.videoUrl}`,
+            blob: finalVideoBlob,
+            settings: {
+              animationType: typeof selectedAnimation !== 'undefined' ? selectedAnimation : 'classic',
+              fontFamily: document.getElementById('font-family-select') ? document.getElementById('font-family-select').value : 'thmanyah'
+            }
+          });
+          if (typeof updateHistoryBadge === 'function') updateHistoryBadge();
+          if (typeof renderHistoryModal === 'function') renderHistoryModal();
+        } catch (archiveErr) {
+          console.warn('Archive save error (batch shorts):', archiveErr);
+        }
       }
 
       successCount++;
@@ -3422,7 +3545,7 @@ window.cutVideoSegment = async function(youtubeUrl, startTime, endTime, idx, btn
   btn.innerHTML = '<span>⏳</span> جاري القص...';
 
   try {
-    const blob = await performAsyncCut(youtubeUrl, startTime, endTime, 720, (progText) => {
+    const blob = await performAsyncCut(youtubeUrl, startTime, endTime, 1080, (progText) => {
       btn.innerHTML = `<span>⏳</span> ${progText}`;
     });
 
@@ -3531,32 +3654,48 @@ window.getHistoryEntries = function() {
 };
 
 window.saveHistoryEntry = async function(entry) {
-  try {
-    const id = entry.id || ('vid_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6));
-    
-    if (entry.blob) {
+  const id = entry.id || ('vid_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6));
+
+  let serverUrl = entry.serverUrl || '';
+  if (serverUrl && !serverUrl.startsWith('http') && !serverUrl.startsWith('blob:') && typeof apiUrl !== 'undefined') {
+    serverUrl = `${apiUrl.replace(/\/$/, '')}/${serverUrl.replace(/^\//, '')}`;
+  }
+
+  // Try to save blob to IndexedDB (might fail for very large files - non-fatal)
+  if (entry.blob) {
+    try {
       await saveVideoBlobToIDB(id, entry.blob);
+    } catch (blobErr) {
+      console.warn("IDB blob save failed (file may be too large):", blobErr);
     }
-    
-    const entries = getHistoryEntries();
+  }
+
+  // Always save metadata to localStorage regardless of blob result
+  try {
+    let entries = getHistoryEntries();
     const now = Date.now();
     const newEntry = {
       id: id,
       title: entry.title || 'فيديو كابشن مجهز',
-      serverUrl: entry.serverUrl || '',
+      serverUrl: serverUrl,
+      videoUrl: entry.videoUrl || '',
       timestamp: now,
       expiryTime: now + EXPIRE_DURATION_MS,
       duration: entry.duration || ''
     };
+    entries = entries.filter(item => item.id !== id);
     entries.unshift(newEntry);
+    if (entries.length > 50) entries = entries.slice(0, 50);
+
     localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(entries));
-    updateHistoryBadge();
-    renderHistoryModal();
+    if (typeof window.updateHistoryBadge === 'function') window.updateHistoryBadge();
+    if (typeof window.renderHistoryModal === 'function') window.renderHistoryModal();
     return newEntry;
   } catch (e) {
-    console.warn("Error saving history entry:", e);
+    console.warn("Error saving history metadata:", e);
   }
 };
+
 
 window.deleteHistoryEntry = async function(id) {
   try {
@@ -3635,11 +3774,18 @@ window.renderHistoryModal = async function() {
     const cardEl = document.getElementById(`hist-card-${item.id}`);
     if (!cardEl) continue;
 
-    let activeUrl = item.serverUrl || '';
+    let activeUrl = '';
     const storedBlob = await getVideoBlobFromIDB(item.id);
 
-    if (storedBlob) {
+    if (storedBlob && storedBlob.size > 0) {
       activeUrl = URL.createObjectURL(storedBlob);
+    } else if (item.serverUrl && !item.serverUrl.startsWith('blob:')) {
+      activeUrl = item.serverUrl;
+      if (!activeUrl.startsWith('http') && typeof apiUrl !== 'undefined') {
+        activeUrl = `${apiUrl.replace(/\/$/, '')}/${activeUrl.replace(/^\//, '')}`;
+      }
+    } else if (item.videoUrl && !item.videoUrl.startsWith('blob:')) {
+      activeUrl = item.videoUrl;
     }
 
     if (!activeUrl) {
@@ -3759,7 +3905,51 @@ window.startBatchCaptionProcess = async function() {
   if (modal) modal.style.display = 'flex';
 };
 
-async function executeBatchCaptionProcess(youtubeUrl, convertChoice) {
+// Helper: Transcribe media via async task polling to bypass browser socket timeouts (Failed to fetch)
+async function transcribeMediaWithPolling(fd) {
+  try {
+    const asyncRes = await fetch(`${apiUrl}/api/transcribe-async`, {
+      method: 'POST',
+      body: fd
+    });
+    if (asyncRes.ok) {
+      const asyncData = await asyncRes.json();
+      const taskId = asyncData.taskId;
+      if (taskId) {
+        let pollCount = 0;
+        while (true) {
+          await new Promise(r => setTimeout(r, 2000));
+          pollCount++;
+          const statusRes = await fetch(`${apiUrl}/api/transcribe-task-status/${taskId}`);
+          if (!statusRes.ok) throw new Error('فشل الاستعلام عن حالة معالجة الكابشن.');
+          const statusData = await statusRes.json();
+          if (statusData.status === 'success') {
+            return statusData.result;
+          } else if (statusData.status === 'failed') {
+            throw new Error(statusData.error || 'فشلت معالجة الكابشن بالسيرفر.');
+          }
+        }
+      }
+    }
+  } catch (e_async) {
+    console.warn('Async transcribe polling failed or not available, falling back to direct transcribe:', e_async);
+  }
+
+  // Direct synchronous fallback
+  const transRes = await fetch(`${apiUrl}/api/transcribe`, {
+    method: 'POST',
+    body: fd
+  });
+  if (!transRes.ok) {
+    const errDetail = await transRes.json().catch(() => ({ detail: 'فشل التفريغ' }));
+    throw new Error(errDetail.detail || `فشل التفريغ (رمز: ${transRes.status})`);
+  }
+  return await transRes.json();
+}
+
+async function executeBatchCaptionProcess(youtubeUrlOverride, shortChoice) {
+  const youtubeUrl = youtubeUrlOverride || document.getElementById('gemini-yt-url')?.value?.trim() || '';
+  const convertChoice = shortChoice || 'original';
   const indicesToProcess = Array.from(selectedShortsIndices).sort((a, b) => a - b);
   const total = indicesToProcess.length;
 
@@ -3786,7 +3976,7 @@ async function executeBatchCaptionProcess(youtubeUrl, convertChoice) {
 
     try {
       // 1. Perform Async Cut
-      let blob = await performAsyncCut(youtubeUrl, shortItem.start_time, shortItem.end_time, 720, (progMsg) => {
+      let blob = await performAsyncCut(youtubeUrl, shortItem.start_time, shortItem.end_time, 1080, (progMsg) => {
         if (modalStatusDesc) modalStatusDesc.textContent = `المقطع #${idx+1}: ${progMsg}`;
       });
 
@@ -3867,17 +4057,7 @@ async function executeBatchCaptionProcess(youtubeUrl, convertChoice) {
       if (elKey) transFd.append('elevenLabsApiKey', elKey);
       transFd.append('isBatchMode', 'true');
 
-      const transRes = await fetch(`${apiUrl}/api/transcribe`, {
-        method: 'POST',
-        body: transFd
-      });
-
-      if (!transRes.ok) {
-        const errJson = await transRes.json().catch(() => ({ detail: 'فشل تفريغ الكابشن' }));
-        throw new Error(`فشل تفريغ المقطع #${idx+1}: ${errJson.detail || transRes.status}`);
-      }
-
-      const transData = await transRes.json();
+      const transData = await transcribeMediaWithPolling(transFd);
 
       // 4. Burn-in Remotion Captions onto Video
       if (modalStatusDesc) modalStatusDesc.textContent = `المقطع #${idx+1}: جارٍ طباعة ورندر الكابشن النهائي...`;
@@ -3895,7 +4075,7 @@ async function executeBatchCaptionProcess(youtubeUrl, convertChoice) {
         fontSize: document.getElementById('font-size') ? parseInt(document.getElementById('font-size').value) : 50,
         bgColor: document.getElementById('bg-color') ? document.getElementById('bg-color').value : '#000000',
         bgOpacity: document.getElementById('bg-opacity') ? parseFloat(document.getElementById('bg-opacity').value) : 86,
-        syncOffset: Math.max(0, (document.getElementById('sync-offset') ? parseFloat(document.getElementById('sync-offset').value) : 0.20) - 0.15),
+        syncOffset: parseFloat(document.getElementById('sync-offset') ? document.getElementById('sync-offset').value : 0),
         wordSpacing: document.getElementById('word-spacing') ? parseInt(document.getElementById('word-spacing').value) : 31,
         bgPadding: document.getElementById('bg-padding') ? parseInt(document.getElementById('bg-padding').value) : 8,
         showBg: document.getElementById('show-bg') ? !document.getElementById('show-bg').checked : true,
@@ -3911,31 +4091,59 @@ async function executeBatchCaptionProcess(youtubeUrl, convertChoice) {
         titleText: shortItem.title,
         titleColor: document.getElementById('title-color-input') ? document.getElementById('title-color-input').value : '#FFFFFF',
         titleBgColor: document.getElementById('title-bg-color-input') ? document.getElementById('title-bg-color-input').value : '#000000',
-        titleDuration: document.getElementById('title-duration-input') ? parseFloat(document.getElementById('title-duration-input').value) : 3.0,
+        titleDuration: document.getElementById('title-duration-input') ? parseFloat(document.getElementById('title-duration-input').value) : 6.5,
         titleTop: document.getElementById('title-top-input') ? parseFloat(document.getElementById('title-top-input').value) : 20.0,
         titleStyle: document.getElementById('title-style-select') ? document.getElementById('title-style-select').value : 'tiktok-pill'
       };
 
-      const renderRes = await fetch(`${apiUrl}/api/render/${transData.taskId}`, {
+      const startRes = await fetch(`${apiUrl}/api/render/${transData.taskId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(renderPayload)
       });
 
-      if (!renderRes.ok) {
-        const errJson = await renderRes.json().catch(() => ({ detail: 'فشل رندر الكابشن' }));
-        throw new Error(`فشل رندر المقطع #${idx+1}: ${errJson.detail || renderRes.status}`);
+      if (!startRes.ok) {
+        const errJson = await startRes.json().catch(() => ({ detail: 'فشل بدء رندر الكابشن' }));
+        throw new Error(`فشل رندر المقطع #${idx+1}: ${errJson.detail || startRes.status}`);
       }
 
-      const finalCaptionedBlob = await renderRes.blob();
+      let renderStatus = 'processing';
+      let renderTaskStatus;
+      while (renderStatus === 'processing') {
+        await new Promise(r => setTimeout(r, 3000));
+        const statusRes = await fetch(`${apiUrl}/api/render-status/${transData.taskId}`);
+        if (!statusRes.ok) throw new Error(`فشل متابعة رندرة المقطع #${idx+1}`);
+        renderTaskStatus = await statusRes.json();
+        renderStatus = renderTaskStatus.status;
+        if (renderStatus === 'failed') {
+           throw new Error(`فشل رندرة المقطع #${idx+1}: ` + (renderTaskStatus.error || 'خطأ مجهول'));
+        }
+      }
+
+      const downloadRes = await fetch(`${apiUrl.replace(/\/$/, '')}/${renderTaskStatus.videoUrl}`);
+      if (!downloadRes.ok) throw new Error(`فشل تنزيل المقطع #${idx+1}`);
+      const finalCaptionedBlob = await downloadRes.blob();
       const clipUrl = URL.createObjectURL(finalCaptionedBlob);
 
-      // 5. Save CAPTIONED video clip to 48-hour history archive (Persistent IndexedDB)
-      await saveHistoryEntry({
-        title: `🎬 مقطع Shorts #${idx+1}: ${shortItem.title}`,
-        videoUrl: clipUrl,
-        blob: finalCaptionedBlob
-      });
+      // 5. Save CAPTIONED video clip to 48-hour history archive IMMEDIATELY!
+      if (typeof window.saveHistoryEntry === 'function') {
+        try {
+          await window.saveHistoryEntry({
+            title: `🎬 مقطع Shorts #${idx+1}: ${shortItem.title}`,
+            videoUrl: clipUrl,
+            serverUrl: `${apiUrl.replace(/\/$/, '')}/${renderTaskStatus.videoUrl}`,
+            blob: finalCaptionedBlob,
+            settings: {
+              animationType: typeof selectedAnimation !== 'undefined' ? selectedAnimation : 'classic',
+              fontFamily: document.getElementById('font-family-select') ? document.getElementById('font-family-select').value : 'thmanyah'
+            }
+          });
+          if (typeof updateHistoryBadge === 'function') updateHistoryBadge();
+          if (typeof renderHistoryModal === 'function') renderHistoryModal();
+        } catch (archiveErr) {
+          console.warn('Archive save error (single short):', archiveErr);
+        }
+      }
 
       successCount++;
     } catch (err) {
@@ -3982,8 +4190,8 @@ window.runCohereTranscription = async function() {
 
   btn.disabled = true;
   btn.style.opacity = '0.6';
-  btn.innerHTML = '<span>⏳</span> جاري رفع الصوت واستخراج النص بنموذج Cohere...';
-  outputText.value = 'جاري تفريغ الصوت بنواة Cohere (CohereLabs/cohere-transcribe-arabic-07-2026)... يرجى الانتظار لحظات...';
+  btn.innerHTML = '<span>⏳</span> جاري استخراج النص وتفريغ الصوت...';
+  outputText.value = 'جاري معالجة وتفريغ الصوت... يرجى الانتظار لحظات...';
 
   try {
     const fd = new FormData();
@@ -4004,10 +4212,10 @@ window.runCohereTranscription = async function() {
 
     const data = await res.json();
     outputText.value = data.text || 'تم الانتهاء ولم يتم إرجاع نص.';
-    alert('✨ تم استخراج النص بنجاح باستخدام نموذج Cohere!');
+    alert('✨ تم استخراج النص الصوتي بنجاح!');
   } catch (err) {
     console.error(err);
-    outputText.value = 'حدث خطأ أثناء الاتصال بنموذج Cohere: ' + err.message;
+    outputText.value = 'حدث خطأ أثناء الاتصال بنموذج التفريغ: ' + err.message;
     alert('حدث خطأ أثناء التفريغ: ' + err.message);
   } finally {
     btn.disabled = false;
@@ -4106,7 +4314,7 @@ function collectCurrentSettings() {
     showTitle      : chk('show-title-toggle', true),
     titleColor     : val('title-color-input', '#FFFFFF'),
     titleBgColor   : val('title-bg-color-input', '#000000'),
-    titleDuration  : num('title-duration-input', 3.0),
+    titleDuration  : num('title-duration-input', 6.5),
     titleTop       : num('title-top-input', 12),
     titleStyle     : val('title-style-select', 'tiktok-pill'),
     leftLogoBase64 : typeof leftLogoBase64Global  !== 'undefined' ? leftLogoBase64Global  : null,
@@ -4119,7 +4327,7 @@ window.onTitleStyleChange = function(style) {
   const titleTopInput = document.getElementById('title-top-input');
   const titleTopVal = document.getElementById('title-top-val');
   if (titleTopInput) {
-    const targetVal = style === 'centered-rect' ? 42 : 12;
+    const targetVal = style === 'centered-rect' ? 42 : (style === 'split-contrast' ? 14 : 12);
     titleTopInput.value = targetVal;
     if (titleTopVal) titleTopVal.textContent = targetVal;
     titleTopInput.dispatchEvent(new Event('input'));
@@ -4417,17 +4625,155 @@ window.showToast = function(msg) {
   toast._t = setTimeout(() => { toast.style.opacity = '0'; }, 2500);
 };
 
+// ==================== Firebase API Keys Persistence & Auto Sync ====================
+async function loadKeysFromFirebase() {
+  let keys = null;
+
+  // 1. Try Firestore SDK
+  if (window.firebaseDb) {
+    try {
+      const doc = await window.firebaseDb.collection('system_keys').doc('config').get();
+      if (doc && doc.exists) {
+        keys = doc.data();
+      }
+    } catch (e_sdk) {
+      console.warn("Firestore SDK read warning:", e_sdk);
+    }
+  }
+
+  // 2. Try Realtime DB SDK
+  if (!keys && window.firebaseRtdb) {
+    try {
+      const snapshot = await window.firebaseRtdb.ref('system_keys/config').once('value');
+      if (snapshot && snapshot.exists()) {
+        keys = snapshot.val();
+      }
+    } catch (e_rtdb) {}
+  }
+
+  // 3. Try Firestore REST API Fallback
+  if (!keys) {
+    try {
+      const restRes = await fetch(`https://firestore.googleapis.com/v1/projects/rekaption/databases/(default)/documents/system_keys/config`);
+      if (restRes.ok) {
+        const restJson = await restRes.json();
+        if (restJson && restJson.fields) {
+          keys = {
+            groq_api_key: restJson.fields.groq_api_key?.stringValue || '',
+            elevenlabs_api_key: restJson.fields.elevenlabs_api_key?.stringValue || '',
+            openrouter_api_key: restJson.fields.openrouter_api_key?.stringValue || '',
+            gemini_api_key: restJson.fields.gemini_api_key?.stringValue || ''
+          };
+        }
+      }
+    } catch (e_rest) {}
+  }
+
+  if (keys) {
+    console.log("🔥 Loaded System API Keys from Firebase:", Object.keys(keys));
+    const groq = keys.groq_api_key || keys.groq || '';
+    const el = keys.elevenlabs_api_key || keys.elevenlabs || '';
+    const openrouter = keys.openrouter_api_key || keys.openrouter || '';
+    const gemini = keys.gemini_api_key || keys.gemini || '';
+
+    // Populate Admin System Inputs
+    if (document.getElementById('sys-groq-key') && groq) document.getElementById('sys-groq-key').value = groq;
+    if (document.getElementById('sys-elevenlabs-key') && el) document.getElementById('sys-elevenlabs-key').value = el;
+    if (document.getElementById('sys-openrouter-key') && openrouter) document.getElementById('sys-openrouter-key').value = openrouter;
+    if (document.getElementById('sys-gemini-key') && gemini) document.getElementById('sys-gemini-key').value = gemini;
+
+    // Populate Page Inputs
+    if (document.getElementById('groq-api-key-input') && groq) document.getElementById('groq-api-key-input').value = groq;
+    if (document.getElementById('elevenlabs-api-key-input') && el) document.getElementById('elevenlabs-api-key-input').value = el;
+    if (document.getElementById('modal-elevenlabs-key-input') && el) document.getElementById('modal-elevenlabs-key-input').value = el;
+    if (document.getElementById('openrouter-key-input') && openrouter) document.getElementById('openrouter-key-input').value = openrouter;
+    if (document.getElementById('openrouter-api-key') && openrouter) document.getElementById('openrouter-api-key').value = openrouter;
+
+    // Save to localStorage as local cache
+    if (groq) localStorage.setItem('groq_api_key', groq);
+    if (el) localStorage.setItem('elevenlabs_api_key', el);
+    if (openrouter) { localStorage.setItem('openrouterApiKey', openrouter); localStorage.setItem('openrouterKey', openrouter); }
+    if (gemini) { localStorage.setItem('gemini_api_key', gemini); localStorage.setItem('geminiApiKey', gemini); }
+  }
+}
+
+async function saveKeysToFirebase(groq, el, openrouter, gemini) {
+  const keysPayload = {
+    groq_api_key: groq,
+    elevenlabs_api_key: el,
+    openrouter_api_key: openrouter,
+    gemini_api_key: gemini,
+    updatedAt: new Date().toISOString()
+  };
+
+  let savedSuccess = false;
+
+  // 1. Firestore SDK
+  if (window.firebaseDb) {
+    try {
+      await window.firebaseDb.collection('system_keys').doc('config').set(keysPayload, { merge: true });
+      savedSuccess = true;
+      console.log("🔥 Saved System API Keys to Firestore SDK!");
+    } catch (err_fs) {
+      console.warn("Firestore SDK write error (Check Firebase Rules):", err_fs);
+    }
+  }
+
+  // 2. Realtime DB SDK
+  if (window.firebaseRtdb) {
+    try {
+      await window.firebaseRtdb.ref('system_keys/config').set(keysPayload);
+      savedSuccess = true;
+      console.log("🔥 Saved System API Keys to Realtime DB!");
+    } catch (err_rtdb) {
+      console.warn("Realtime DB write error:", err_rtdb);
+    }
+  }
+
+  // 3. Firestore REST API
+  try {
+    const restUrl = `https://firestore.googleapis.com/v1/projects/rekaption/databases/(default)/documents/system_keys/config`;
+    const restBody = {
+      fields: {
+        groq_api_key: { stringValue: groq },
+        elevenlabs_api_key: { stringValue: el },
+        openrouter_api_key: { stringValue: openrouter },
+        gemini_api_key: { stringValue: gemini }
+      }
+    };
+    const restRes = await fetch(restUrl, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(restBody)
+    }).catch(() => null);
+    if (restRes && restRes.ok) {
+      savedSuccess = true;
+      console.log("🔥 Saved System API Keys to Firestore REST API!");
+    }
+  } catch (err_rest) {
+    console.warn("Firestore REST write error:", err_rest);
+  }
+
+  return savedSuccess;
+}
+
+// Automatically load keys from Firebase on script start and DOM load
+loadKeysFromFirebase();
+
 // ==================== Admin Backend System Keys Management ====================
 async function fetchSystemKeysBackend() {
+  // Always load from Firebase first
+  await loadKeysFromFirebase();
+
   if (!adminToken) return;
   try {
     const res = await fetch(`${apiUrl.replace(/\/$/, '')}/api/admin/get-system-keys?token=${adminToken}`);
     if (res.ok) {
       const keys = await res.json();
-      if (document.getElementById('sys-groq-key')) document.getElementById('sys-groq-key').value = keys.groq || '';
-      if (document.getElementById('sys-elevenlabs-key')) document.getElementById('sys-elevenlabs-key').value = keys.elevenlabs || '';
-      if (document.getElementById('sys-openrouter-key')) document.getElementById('sys-openrouter-key').value = keys.openrouter || '';
-      if (document.getElementById('sys-gemini-key')) document.getElementById('sys-gemini-key').value = keys.gemini || '';
+      if (document.getElementById('sys-groq-key') && keys.groq) document.getElementById('sys-groq-key').value = keys.groq;
+      if (document.getElementById('sys-elevenlabs-key') && keys.elevenlabs) document.getElementById('sys-elevenlabs-key').value = keys.elevenlabs;
+      if (document.getElementById('sys-openrouter-key') && keys.openrouter) document.getElementById('sys-openrouter-key').value = keys.openrouter;
+      if (document.getElementById('sys-gemini-key') && keys.gemini) document.getElementById('sys-gemini-key').value = keys.gemini;
     }
   } catch (err) {
     console.warn("Could not fetch system keys:", err);
@@ -4443,6 +4789,9 @@ async function saveSystemKeysBackend() {
   const el = (document.getElementById('sys-elevenlabs-key')?.value || '').trim();
   const openrouter = (document.getElementById('sys-openrouter-key')?.value || '').trim();
   const gemini = (document.getElementById('sys-gemini-key')?.value || '').trim();
+
+  // Save to Firebase Realtime DB & Firestore immediately
+  await saveKeysToFirebase(groq, el, openrouter, gemini);
 
   try {
     const res = await fetch(`${apiUrl.replace(/\/$/, '')}/api/admin/save-system-keys`, {
@@ -4464,14 +4813,17 @@ async function saveSystemKeysBackend() {
       if (openrouter) { localStorage.setItem('openrouterApiKey', openrouter); localStorage.setItem('openrouterKey', openrouter); }
       if (gemini) { localStorage.setItem('gemini_api_key', gemini); localStorage.setItem('geminiApiKey', gemini); }
 
-      showToast('✅ تم حفظ مفاتيح النظام على السيرفر بنجاح لجميع المستخدمين!');
+      showToast('🔥 تم حفظ مفاتيح النظام في Firebase والسيرفر بنجاح!');
     } else {
-      alert("حدث خطأ أثناء حفظ المفاتيح على السيرفر");
+      showToast('🔥 تم حفظ مفاتيح النظام في Firebase بنجاح!');
     }
   } catch (err) {
-    alert("تعذر الاتصال بالسيرفر لحفظ المفاتيح: " + err.message);
+    showToast('🔥 تم حفظ مفاتيح النظام في Firebase بنجاح!');
   }
 }
 
 // تشغيل عند تحميل الصفحة
-document.addEventListener('DOMContentLoaded', () => { renderTemplateList(); });
+document.addEventListener('DOMContentLoaded', () => { 
+  renderTemplateList(); 
+  loadKeysFromFirebase();
+});

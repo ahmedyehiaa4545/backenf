@@ -2806,6 +2806,132 @@ def get_system_keys_api(token: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ==================== Buffer Integration Proxy Endpoints ====================
+
+class BufferChannelsProxyReq(BaseModel):
+    token: str
+
+class BufferPublishProxyReq(BaseModel):
+    token: str
+    channel_id: str
+    text: str = ""
+    video_url: str
+    scheduled_at: str | None = None
+    is_now: bool = True
+
+@app.post("/api/buffer/channels")
+def buffer_channels_proxy(req: BufferChannelsProxyReq):
+    if not req.token:
+        raise HTTPException(status_code=400, detail="Buffer token is required")
+    query = """
+    query GetBufferChannels {
+      account {
+        organizations {
+          id
+          name
+          channels {
+            id
+            name
+            displayName
+            service
+            avatar
+            isQueuePaused
+          }
+        }
+      }
+    }
+    """
+    try:
+        res = requests.post(
+            "https://api.buffer.com",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {req.token.strip()}"
+            },
+            json={"query": query},
+            timeout=20
+        )
+        data = res.json()
+        if res.status_code != 200 or "errors" in data:
+            err_msg = data.get("errors", [{}])[0].get("message", f"Buffer API error {res.status_code}")
+            return {"channels": [], "error": err_msg}
+        
+        channels = []
+        orgs = data.get("data", {}).get("account", {}).get("organizations", [])
+        for org in orgs:
+            for ch in org.get("channels", []):
+                channels.append({
+                    "id": ch.get("id"),
+                    "name": ch.get("name") or ch.get("displayName") or "Channel",
+                    "displayName": ch.get("displayName") or ch.get("name"),
+                    "service": ch.get("service") or "unknown",
+                    "avatar": ch.get("avatar") or "",
+                    "organizationName": org.get("name")
+                })
+        return {"channels": channels, "status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/buffer/publish")
+def buffer_publish_proxy(req: BufferPublishProxyReq):
+    if not req.token or not req.channel_id or not req.video_url:
+        raise HTTPException(status_code=400, detail="Missing required parameters")
+    
+    mutation = """
+    mutation CreatePost($input: CreatePostInput!) {
+      createPost(input: $input) {
+        ... on PostActionSuccess {
+          post {
+            id
+            dueAt
+            status
+          }
+        }
+        ... on MutationError {
+          message
+        }
+        ... on UserError {
+          message
+        }
+      }
+    }
+    """
+    input_payload = {
+        "channelId": req.channel_id.strip(),
+        "text": req.text,
+        "schedulingType": "automatic",
+        "mode": "shareNow" if req.is_now else "customScheduled",
+        "assets": {
+            "video": {
+                "url": req.video_url
+            }
+        }
+    }
+    if not req.is_now and req.scheduled_at:
+        input_payload["dueAt"] = req.scheduled_at
+
+    try:
+        res = requests.post(
+            "https://api.buffer.com",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {req.token.strip()}"
+            },
+            json={"query": mutation, "variables": {"input": input_payload}},
+            timeout=30
+        )
+        data = res.json()
+        if "errors" in data and len(data["errors"]) > 0:
+            return {"status": "error", "error": data["errors"][0].get("message", "Buffer mutation error")}
+        
+        post_data = data.get("data", {}).get("createPost", {})
+        if "message" in post_data:
+            return {"status": "error", "error": post_data["message"]}
+        
+        return {"status": "success", "post": post_data.get("post", {})}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Serve public folder for previewing uploaded media files
 public_dir_path = os.path.abspath("public")
 os.makedirs(public_dir_path, exist_ok=True)
