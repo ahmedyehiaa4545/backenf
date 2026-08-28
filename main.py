@@ -2830,7 +2830,7 @@ def buffer_channels_proxy(req: BufferChannelsProxyReq):
     
     # Step 1: Query Organizations
     org_query = """
-    query GetBufferOrganizations {
+    query {
       account {
         id
         organizations {
@@ -2848,39 +2848,16 @@ def buffer_channels_proxy(req: BufferChannelsProxyReq):
             timeout=25
         )
         data = res.json()
-        if res.status_code != 200 or "errors" in data:
-            # Fallback query for user organizations
-            fallback_org_query = """
-            query GetUserOrganizations {
-              user {
-                id
-                organizations {
-                  id
-                  name
-                }
-              }
-            }
-            """
-            res = requests.post(
-                "https://api.buffer.com",
-                headers=headers,
-                json={"query": fallback_org_query},
-                timeout=25
-            )
-            data = res.json()
-
         if "errors" in data and len(data["errors"]) > 0:
             return {"channels": [], "error": data["errors"][0].get("message", "Buffer API error")}
 
-        orgs = (
-            data.get("data", {}).get("account", {}).get("organizations") or
-            data.get("data", {}).get("user", {}).get("organizations") or
-            []
-        )
+        orgs = data.get("data", {}).get("account", {}).get("organizations", [])
+        if not orgs:
+            return {"channels": [], "error": "لم يتم العثور على أي منظمة في حساب Buffer."}
 
         all_channels = []
         chan_query = """
-        query GetOrganizationChannels($input: ChannelsInput!) {
+        query GetChannels($input: ChannelsInput!) {
           channels(input: $input) {
             id
             name
@@ -2922,6 +2899,11 @@ def buffer_publish_proxy(req: BufferPublishProxyReq):
     if not req.token or not req.channel_id or not req.video_url:
         raise HTTPException(status_code=400, detail="Missing required parameters")
     
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {req.token.strip()}"
+    }
+
     mutation = """
     mutation CreatePost($input: CreatePostInput!) {
       createPost(input: $input) {
@@ -2930,12 +2912,10 @@ def buffer_publish_proxy(req: BufferPublishProxyReq):
             id
             dueAt
             status
+            text
           }
         }
         ... on MutationError {
-          message
-        }
-        ... on UserError {
           message
         }
       }
@@ -2960,10 +2940,7 @@ def buffer_publish_proxy(req: BufferPublishProxyReq):
     try:
         res = requests.post(
             "https://api.buffer.com",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {req.token.strip()}"
-            },
+            headers=headers,
             json={"query": mutation, "variables": {"input": input_payload}},
             timeout=30
         )
