@@ -2823,20 +2823,19 @@ class BufferPublishProxyReq(BaseModel):
 def buffer_channels_proxy(req: BufferChannelsProxyReq):
     if not req.token:
         raise HTTPException(status_code=400, detail="Buffer token is required")
-    query = """
-    query GetBufferChannels {
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {req.token.strip()}"
+    }
+    
+    # Step 1: Query Organizations
+    org_query = """
+    query GetBufferOrganizations {
       account {
+        id
         organizations {
           id
           name
-          channels {
-            id
-            name
-            displayName
-            service
-            avatar
-            isQueuePaused
-          }
         }
       }
     }
@@ -2844,33 +2843,79 @@ def buffer_channels_proxy(req: BufferChannelsProxyReq):
     try:
         res = requests.post(
             "https://api.buffer.com",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {req.token.strip()}"
-            },
-            json={"query": query},
-            timeout=20
+            headers=headers,
+            json={"query": org_query},
+            timeout=25
         )
         data = res.json()
         if res.status_code != 200 or "errors" in data:
-            err_msg = data.get("errors", [{}])[0].get("message", f"Buffer API error {res.status_code}")
-            return {"channels": [], "error": err_msg}
-        
-        channels = []
-        orgs = data.get("data", {}).get("account", {}).get("organizations", [])
+            # Fallback query for user organizations
+            fallback_org_query = """
+            query GetUserOrganizations {
+              user {
+                id
+                organizations {
+                  id
+                  name
+                }
+              }
+            }
+            """
+            res = requests.post(
+                "https://api.buffer.com",
+                headers=headers,
+                json={"query": fallback_org_query},
+                timeout=25
+            )
+            data = res.json()
+
+        if "errors" in data and len(data["errors"]) > 0:
+            return {"channels": [], "error": data["errors"][0].get("message", "Buffer API error")}
+
+        orgs = (
+            data.get("data", {}).get("account", {}).get("organizations") or
+            data.get("data", {}).get("user", {}).get("organizations") or
+            []
+        )
+
+        all_channels = []
+        chan_query = """
+        query GetOrganizationChannels($input: ChannelsInput!) {
+          channels(input: $input) {
+            id
+            name
+            displayName
+            service
+            avatar
+          }
+        }
+        """
         for org in orgs:
-            for ch in org.get("channels", []):
-                channels.append({
+            org_id = org.get("id")
+            org_name = org.get("name", "Buffer Org")
+            if not org_id:
+                continue
+            c_res = requests.post(
+                "https://api.buffer.com",
+                headers=headers,
+                json={"query": chan_query, "variables": {"input": {"organizationId": org_id}}},
+                timeout=25
+            )
+            c_data = c_res.json()
+            ch_list = c_data.get("data", {}).get("channels", [])
+            for ch in ch_list:
+                all_channels.append({
                     "id": ch.get("id"),
-                    "name": ch.get("name") or ch.get("displayName") or "Channel",
+                    "name": ch.get("name") or ch.get("displayName") or "TikTok Channel",
                     "displayName": ch.get("displayName") or ch.get("name"),
-                    "service": ch.get("service") or "unknown",
+                    "service": ch.get("service") or "tiktok",
                     "avatar": ch.get("avatar") or "",
-                    "organizationName": org.get("name")
+                    "organizationName": org_name
                 })
-        return {"channels": channels, "status": "success"}
+        
+        return {"channels": all_channels, "status": "success"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"channels": [], "error": str(e)}
 
 @app.post("/api/buffer/publish")
 def buffer_publish_proxy(req: BufferPublishProxyReq):
@@ -2901,11 +2946,13 @@ def buffer_publish_proxy(req: BufferPublishProxyReq):
         "text": req.text,
         "schedulingType": "automatic",
         "mode": "shareNow" if req.is_now else "customScheduled",
-        "assets": {
-            "video": {
-                "url": req.video_url
+        "assets": [
+            {
+                "video": {
+                    "url": req.video_url
+                }
             }
-        }
+        ]
     }
     if not req.is_now and req.scheduled_at:
         input_payload["dueAt"] = req.scheduled_at
