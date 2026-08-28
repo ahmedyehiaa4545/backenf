@@ -654,103 +654,90 @@ async def transcribe_with_groq_whisper(
     original_text = " ".join(w["clean_word"] for w in words_data)
     print(f"✅ Groq extracted {len(words_data)} words. Text length: {len(original_text)} chars.")
 
-    # 2. Google Gemini Audio Listening & Speech Correction (استماع للصوت وتصحيح الكلمات واللهجة)
+    # 2. AI Smart Processing with google/gemini-2.5-pro-preview-05-06 (Audio-Listening Mode)
     effective_api_key = openrouter_key or gemini_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMINI_API_KEY")
     
     if effective_api_key and not skip_correction:
-        prompt_audio = f"""أنت خبير محترف في التدقيق اللغوي للترجمات وتقسيمها (Subtitles) والاستماع الصوتي المباشر.
-قم بالاستماع بتركيز شديد للملف الصوتي المرفق، وراجع النص المفرغ أدناه:
+        headers = {
+            "Authorization": f"Bearer {effective_api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://rekaption.hf.space/",
+            "X-Title": "ReKaption Subtitle Processor"
+        }
+
+        # MODE A: Multimodal Audio Listening & Speech Correction
+        try:
+            print("🎧 Running google/gemini-3.7-flash WITH AUDIO LISTENING...")
+            import base64
+            with open(audio_path, "rb") as f_aud:
+                audio_b64 = base64.b64encode(f_aud.read()).decode("utf-8")
+
+            prompt_audio = f"""أنت خبير محترف في التدقيق اللغوي للترجمات وتقسيمها (Subtitles).
+قم بالاستماع بتركيز شديد للملف الصوتي المرفق، وراجع النص أدناه:
 
 مهمتك الرئيسية:
 1. استمع للصوت المرفق، وقم بتصحيح أي كلمة مفرغة ليكون النص مطابقاً تماماً لنطق الصوت المسموع دون تغيير لهجة المتحدث (مثال: 'من هالعائلة' اتركها بنطقها المسموع ولا تحولها لفصحى مثل 'من هذه العائلة').
 2. احذف فوراً أي كلمات غير مكتملة أو تأتأة أو مقاطع مكررة أو شرطات مكسورة (مثل 'اااا'، 'الـ'، 'ال ال'، 'في ال في ال'، 'لـ'، والشرطات '--').
-3. التنوين: أي كلمة منونة سمعتها في الصوت اكتب تنوين الفتح (ـاً) عليها بشكل دقيق (شكراً، جداً، طبعاً، دائماً، مثلاً، أهلاً، مرحباً).
-4. أدخل علامة "|" لتقسيم الكلمات إلى مقاطع سياقية قصيرة (من {min_words} إلى {max_words} كلمات كحد أقصى لكل مقطع).
-5. أخرج النص المصلح والمقسم فقط في سطر واحد مفصولاً بعلامات "|".
+3. أدخل علامة "|" لتقسيم الكلمات إلى مقاطع سياقية قصيرة (من {min_words} إلى {max_words} كلمات كحد أقصى لكل مقطع).
+4. أخرج النص المصلح والمقسم فقط في سطر واحد مفصولاً بعلامات "|".
 
 النص المفرغ المبدئي:
 {original_text}"""
 
-        clean_gemini_key = (gemini_key or "").strip()
-        clean_openrouter_key = (openrouter_key or "").strip()
+            target_model = "google/gemini-3.7-flash"
+            req_data_audio = {
+                "model": target_model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt_audio},
+                            {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "mp3"}}
+                        ]
+                    }
+                ],
+                "temperature": 0.1
+            }
 
-        # المسار الأول: إرسال الصوت مباشرة لمحرك Google Gemini الرسمي (سرعة فائقة 2-3 ثوانٍ)
-        if clean_gemini_key.startswith("AIzaSy") or (clean_gemini_key and not clean_gemini_key.startswith("sk-")):
-            try:
-                print("🎧 Running Direct Google Gemini Audio-Listening (gemini-2.5-flash)...")
-                import google.generativeai as genai
-                genai.configure(api_key=clean_gemini_key)
-                g_model = genai.GenerativeModel("gemini-2.5-flash")
-                
-                with open(audio_path, "rb") as f_aud:
-                    aud_bytes = f_aud.read()
-                
-                audio_part = {
-                    "mime_type": "audio/mp3",
-                    "data": aud_bytes
-                }
-                g_res = g_model.generate_content([prompt_audio, audio_part])
-                if g_res and g_res.text:
-                    audio_corrected_output = g_res.text.strip()
-                    audio_corrected_output = re.sub(r"\|+", "|", audio_corrected_output.replace("\r", "|").replace("\n", "|")).strip("| ")
-                    print(f"✨ Direct Google Gemini Audio-Listening Correction Success ({len(audio_corrected_output)} chars)!")
-            except Exception as e_direct:
-                print(f"⚠️ Direct Google Gemini audio correction notice: {e_direct}")
+            max_attempts = 4
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    print(f"🎧 OpenRouter Audio Listening attempt {attempt}/{max_attempts} with model {target_model}...")
+                    resp_aud = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_audio, timeout=120)
+                    if resp_aud.status_code == 200:
+                        content = resp_aud.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                        if content and content.strip():
+                            audio_corrected_output = content.strip()
+                            audio_corrected_output = re.sub(r"\|+", "|", audio_corrected_output.replace("\r", "|").replace("\n", "|")).strip("| ")
+                            print(f"✅ Audio Listening output generated with {target_model} on attempt {attempt} ({len(audio_corrected_output)} chars).")
+                            break
+                        else:
+                            print(f"⚠️ OpenRouter returned empty content on attempt {attempt}/{max_attempts} for model {target_model}. Retrying same model...")
+                except Exception as e_m:
+                    print(f"⚠️ OpenRouter request error on attempt {attempt}/{max_attempts} for model {target_model}: {e_m}")
+                time.sleep(1.5)
+        except Exception as e_aud:
+            print(f"⚠️ Audio listening mode warning: {e_aud}")
 
-        # المسار الثاني: إرسال الصوت لـ OpenRouter بنموذج Google Gemini 3.7 Flash
-        if not audio_corrected_output and effective_api_key:
-            try:
-                print("🎧 Running OpenRouter Google Gemini Audio-Listening (google/gemini-3.7-flash)...")
-                import base64
-                with open(audio_path, "rb") as f_aud:
-                    audio_b64 = base64.b64encode(f_aud.read()).decode("utf-8")
+        # MODE B: Text-Only Phrase Splitting (without audio)
+        try:
+            print("📝 Running google/gemini-3.7-flash TEXT-ONLY...")
+            prompt_text = f"""أنت خبير في تقسيم السبترايتل. مهمتك الوحيدة: إدراج علامة "|" داخل النص لتقسيمه إلى مقاطع من {min_words} إلى {max_words} كلمات بالمعنى. ممنوع تغيير أو تعديل أي كلمة:
+{original_text}"""
 
-                req_data_audio = {
-                    "model": "google/gemini-3.7-flash",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt_audio},
-                                {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "mp3"}}
-                            ]
-                        }
-                    ],
-                    "temperature": 0.1
-                }
-                headers = {
-                    "Authorization": f"Bearer {effective_api_key.strip()}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://rekaption.com",
-                    "X-Title": "ReKaption"
-                }
-                resp_aud = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_audio, timeout=35)
-                if resp_aud.status_code == 200:
-                    content = resp_aud.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-                    if content and content.strip():
-                        audio_corrected_output = content.strip()
-                        audio_corrected_output = re.sub(r"\|+", "|", audio_corrected_output.replace("\r", "|").replace("\n", "|")).strip("| ")
-                        print(f"✨ OpenRouter Audio-Listening Correction Success with google/gemini-3.7-flash ({len(audio_corrected_output)} chars)!")
-            except Exception as e_or:
-                print(f"⚠️ OpenRouter audio listening notice: {e_or}")
+            req_data_text = {
+                "model": "google/gemini-3.7-flash",
+                "messages": [{"role": "user", "content": prompt_text}],
+                "temperature": 0.1
+            }
 
-        # المسار الاحتياطي: تقسيم نصي فائق السرعة إذا تعثر استقبال الصوت
-        if not audio_corrected_output:
-            try:
-                print("📝 Fast Text-Only Phrase Splitting fallback...")
-                prompt_text = f"""أدخل علامة "|" فقط لتقسيم النص إلى مقاطع سياقية من {min_words} إلى {max_words} كلمات دون تغيير أي كلمة:\n{original_text}"""
-                req_data_text = {
-                    "model": "google/gemini-3.7-flash",
-                    "messages": [{"role": "user", "content": prompt_text}],
-                    "temperature": 0.1
-                }
-                headers = {"Authorization": f"Bearer {effective_api_key.strip()}", "Content-Type": "application/json"}
-                resp_txt = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_text, timeout=10)
-                if resp_txt.status_code == 200:
-                    text_only_output = resp_txt.json()["choices"][0]["message"]["content"].strip()
-                    text_only_output = re.sub(r"\|+", "|", text_only_output.replace("\r", "|").replace("\n", "|")).strip("| ")
-            except Exception as e_txt:
-                pass
+            resp_txt = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=req_data_text, timeout=60)
+            if resp_txt.status_code == 200:
+                text_only_output = resp_txt.json()["choices"][0]["message"]["content"].strip()
+                text_only_output = re.sub(r"\|+", "|", text_only_output.replace("\r", "|").replace("\n", "|")).strip("| ")
+                print(f"✅ Text-Only output generated ({len(text_only_output)} chars).")
+        except Exception as e_txt:
+            print(f"⚠️ Text-only mode warning: {e_txt}")
 
     # Determine segment counts and apply Gemini Audio Listening corrected words to subtitles
     segment_counts = []
@@ -1514,11 +1501,8 @@ async def transcribe_media(
         effective_openrouter_key = (openrouterKey or "").strip() or get_system_key("openrouter") or os.environ.get("OPENROUTER_CORRECTOR_KEY", "").strip() or os.environ.get("OPENROUTER_API_KEY", "").strip()
         effective_gemini_key = (geminiApiKey or "").strip() or get_system_key("gemini") or os.environ.get("GEMINI_API_KEY", "").strip()
 
-        # Neural Audio Enhancement with DeepFilterNet (only if explicitly requested via env to keep transcription blazing fast < 2s)
-        if os.environ.get("ENABLE_DEEPFILTERNET") == "1" and not isBatchMode:
-            ai_audio_path = enhance_audio_with_deepfilternet(audio_path, task_dir)
-        else:
-            ai_audio_path = audio_path
+        # Neural Audio Enhancement with DeepFilterNet (removes background noise, room reverb, and isolates crystal-clear voice)
+        ai_audio_path = enhance_audio_with_deepfilternet(audio_path, task_dir)
         ai_audio_ext = os.path.splitext(ai_audio_path)[1] or audio_ext
 
         # If ElevenLabs Scribe V2 is requested
@@ -2192,10 +2176,10 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             "CaptionsVideo",
             output_video_path,
             "--props", props_path,
-            "--concurrency=2",
+            "--concurrency=4",
             "--gl=swangle",
-            "--offthreadvideo-cache-size-in-bytes=268435456",
-            "--jpeg-quality=80",
+            "--offthreadvideo-cache-size-in-bytes=134217728",
+            "--jpeg-quality=75",
             "--log=error",
             "--browser-args=--no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --disable-extensions --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-setuid-sandbox --js-flags=--max-old-space-size=4096"
         ]
@@ -2257,7 +2241,7 @@ async def get_render_status(task_id: str):
     return RENDER_TASKS[task_id]
 
 @app.get("/api/render-download/{task_id}")
-async def download_rendered_video(task_id: str):
+async def download_rendered_video(task_id: str, background_tasks: BackgroundTasks):
     public_dir = os.path.abspath("public")
     task_dir = os.path.join(public_dir, f"temp_{task_id}")
     output_video_path = os.path.join(task_dir, "output.mp4")
@@ -2265,6 +2249,14 @@ async def download_rendered_video(task_id: str):
     if not os.path.exists(output_video_path):
         raise HTTPException(status_code=404, detail="Video not found")
         
+    background_tasks.add_task(clean_temp_dir, task_dir)
+    # Also clean up the task state after a delay to avoid memory leak
+    async def remove_task_state():
+        await asyncio.sleep(60)
+        if task_id in RENDER_TASKS:
+            del RENDER_TASKS[task_id]
+    background_tasks.add_task(remove_task_state)
+    
     return FileResponse(
         output_video_path,
         media_type="video/mp4",
@@ -2814,542 +2806,9 @@ def get_system_keys_api(token: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== Buffer Social Media & TikTok Publishing API ====================
-
-class BufferPostRequest(BaseModel):
-    apiKey: str
-    channelId: str | None = None
-    organizationId: str | None = None
-    content: str
-    videoUrl: str
-    publishNow: bool = False
-    scheduledFor: str | None = None
-    saveToDraft: bool = False
-    cloudinaryCloudName: str | None = None
-    cloudinaryUploadPreset: str | None = None
-
-@app.post("/api/buffer/channels")
-async def buffer_get_channels(payload: dict):
-    api_key = payload.get("apiKey") or os.environ.get("BUFFER_API_KEY")
-    if not api_key:
-        raise HTTPException(400, "Buffer API Key is required.")
-    
-    headers = {
-        "Authorization": f"Bearer {api_key.strip()}",
-        "Content-Type": "application/json"
-    }
-
-    account_query = """
-    query GetAccountAndOrgs {
-      account {
-        id
-        email
-        organizations {
-          id
-          name
-        }
-      }
-    }
-    """
-    try:
-        res = requests.post(
-            "https://api.buffer.com",
-            headers=headers,
-            json={"query": account_query},
-            timeout=20
-        )
-        if res.status_code != 200:
-            raise HTTPException(res.status_code, f"Buffer API Error: {res.text}")
-        
-        data = res.json()
-        if "errors" in data and not data.get("data"):
-            raise HTTPException(400, f"Buffer GraphQL Error: {data['errors'][0].get('message')}")
-        
-        account_data = data.get("data", {}).get("account", {})
-        organizations = account_data.get("organizations", [])
-        
-        all_channels = []
-        for org in organizations:
-            org_id = org.get("id")
-            if not org_id:
-                continue
-            channels_query = """
-            query GetChannels($input: ChannelsInput!) {
-              channels(input: $input) {
-                id
-                name
-                service
-                displayName
-                avatar
-              }
-            }
-            """
-            c_res = requests.post(
-                "https://api.buffer.com",
-                headers=headers,
-                json={
-                    "query": channels_query,
-                    "variables": {"input": {"organizationId": org_id}}
-                },
-                timeout=20
-            )
-            if c_res.status_code == 200:
-                c_data = c_res.json()
-                ch_list = c_data.get("data", {}).get("channels", [])
-                for ch in ch_list:
-                    ch["organizationId"] = org_id
-                    ch["orgName"] = org.get("name")
-                    all_channels.append(ch)
-
-        return {
-            "account": account_data,
-            "channels": all_channels
-        }
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(500, f"Failed to connect to Buffer: {str(e)}")
-
-def upload_to_public_cdn(file_path: str) -> str:
-    """Uploads video to reliable global media CDNs (Litterbox, Catbox, tmpfiles) for 100% Buffer acceptance"""
-    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-        return ""
-        
-    # 1. Try Litterbox (72 hours temporary - high speed CDN, zero bot blockers)
-    try:
-        url = "https://litterbox.catbox.moe/resources/internals/api.php"
-        data = {"reqtype": "fileupload", "time": "72h"}
-        with open(file_path, "rb") as f:
-            files = {"fileToUpload": f}
-            res = requests.post(url, data=data, files=files, timeout=45)
-            if res.status_code == 200 and res.text.strip().startswith("http"):
-                cdn_url = res.text.strip()
-                print(f"🌟 Uploaded video to Litterbox CDN for Buffer: {cdn_url}", flush=True)
-                return cdn_url
-    except Exception as e:
-        print(f"Litterbox upload fallback: {e}", flush=True)
-
-    # 2. Try Catbox (Permanent)
-    try:
-        url = "https://catbox.moe/user/api.php"
-        data = {"reqtype": "fileupload"}
-        with open(file_path, "rb") as f:
-            files = {"fileToUpload": f}
-            res = requests.post(url, data=data, files=files, timeout=45)
-            if res.status_code == 200 and res.text.strip().startswith("http"):
-                cdn_url = res.text.strip()
-                print(f"🌟 Uploaded video to Catbox CDN for Buffer: {cdn_url}", flush=True)
-                return cdn_url
-    except Exception as e:
-        print(f"Catbox upload fallback: {e}", flush=True)
-
-    # 3. Try tmpfiles.org
-    try:
-        url = "https://tmpfiles.org/api/v1/upload"
-        with open(file_path, "rb") as f:
-            files = {"file": f}
-            res = requests.post(url, files=files, timeout=45)
-            if res.status_code == 200:
-                d = res.json()
-                raw_url = d.get("data", {}).get("url", "")
-                if "tmpfiles.org/" in raw_url:
-                    cdn_url = raw_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-                    print(f"🌟 Uploaded video to tmpfiles CDN for Buffer: {cdn_url}", flush=True)
-                    return cdn_url
-    except Exception as e:
-        print(f"tmpfiles upload fallback: {e}", flush=True)
-
-    return ""
-
-def upload_to_cloudinary(file_path: str, cloud_name: str = None, preset: str = None) -> str:
-    """Uploads video to Cloudinary if env variables or parameters are configured"""
-    cloud_name = cloud_name or os.environ.get("CLOUDINARY_CLOUD_NAME")
-    preset = preset or os.environ.get("CLOUDINARY_UPLOAD_PRESET")
-    api_key = os.environ.get("CLOUDINARY_API_KEY")
-    api_secret = os.environ.get("CLOUDINARY_API_SECRET")
-    
-    if not cloud_name:
-        return ""
-    try:
-        url = f"https://api.cloudinary.com/v1_1/{cloud_name}/video/upload"
-        with open(file_path, "rb") as f:
-            files = {"file": f}
-            data = {}
-            if preset:
-                data["upload_preset"] = preset
-            elif api_key and api_secret:
-                import time, hashlib
-                ts = str(int(time.time()))
-                data["timestamp"] = ts
-                data["api_key"] = api_key
-                sig_str = f"timestamp={ts}{api_secret}"
-                data["signature"] = hashlib.sha1(sig_str.encode()).hexdigest()
-            else:
-                return ""
-            res = requests.post(url, data=data, files=files, timeout=60)
-            if res.status_code == 200:
-                sec_url = res.json().get("secure_url")
-                if sec_url:
-                    print(f"🌟 Cloudinary Video Upload Success: {sec_url}", flush=True)
-                    return sec_url
-            else:
-                print(f"Cloudinary upload HTTP {res.status_code}: {res.text}", flush=True)
-    except Exception as e:
-        print(f"Cloudinary upload notice: {e}", flush=True)
-    return ""
-
-def ensure_faststart_mp4(file_path: str):
-    """Guarantees moov atom at beginning of MP4 (+faststart) and AAC audio for 100% Buffer/TikTok compatibility"""
-    try:
-        fast_tmp = file_path + ".fast.mp4"
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", file_path,
-            "-c:v", "copy",
-            "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
-            "-movflags", "+faststart",
-            fast_tmp
-        ]
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=40)
-        if p.returncode == 0 and os.path.exists(fast_tmp) and os.path.getsize(fast_tmp) > 1000:
-            os.replace(fast_tmp, file_path)
-            
-        with open(file_path, 'rb') as f:
-            head = f.read(65536)
-        print(f"🔍 MP4 Header Check: {'✅ moov atom is at head (faststart OK)' if b'moov' in head else '⚠️ moov not in head'}", flush=True)
-    except Exception as e:
-        print(f"Faststart optimization notice: {e}", flush=True)
-
-@app.post("/api/buffer/upload-media")
-async def buffer_upload_media(file: UploadFile = File(...)):
-    """Uploads a video blob/file directly, guarantees +faststart, and returns a direct HTTPS public URL on Railway/Cloudinary for Buffer"""
-    try:
-        upload_id = str(uuid.uuid4())
-        public_dir = os.path.abspath("public")
-        task_dir = os.path.join(public_dir, f"buffer_{upload_id}")
-        os.makedirs(task_dir, exist_ok=True)
-        
-        file_ext = os.path.splitext(file.filename or "")[1] or ".mp4"
-        out_filename = f"video{file_ext}"
-        target_path = os.path.join(task_dir, out_filename)
-        
-        with open(target_path, "wb") as f_out:
-            shutil.copyfileobj(file.file, f_out)
-            f_out.flush()
-            os.fsync(f_out.fileno())
-
-        # Guarantee moov atom is at head & AAC audio
-        ensure_faststart_mp4(target_path)
-            
-        # 1. Optional Cloudinary CDN upload
-        cld_url = upload_to_cloudinary(target_path)
-        if cld_url:
-            return {"status": "success", "videoUrl": cld_url}
-        
-        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
-        if domain:
-            public_url = f"https://{domain}/public/buffer_{upload_id}/{out_filename}"
-        else:
-            public_url = f"https://backenf-production.up.railway.app/public/buffer_{upload_id}/{out_filename}"
-            
-        print(f"✅ Uploaded media for Buffer (Direct Railway Stream): {public_url} ({os.path.getsize(target_path)} bytes)", flush=True)
-        return {"status": "success", "videoUrl": public_url}
-    except Exception as e:
-        print(f"❌ Failed to upload media for Buffer: {e}", flush=True)
-        raise HTTPException(status_code=500, detail=f"Failed to upload media: {str(e)}")
-
-@app.post("/api/buffer/create-post")
-async def buffer_create_post(req: BufferPostRequest):
-    import time
-    api_key = req.apiKey or os.environ.get("BUFFER_API_KEY")
-    if not api_key:
-        raise HTTPException(400, "Buffer API Key is required.")
-    
-    if not req.videoUrl:
-        raise HTTPException(400, "Video URL is required for Buffer posting.")
-
-    headers = {
-        "Authorization": f"Bearer {api_key.strip()}",
-        "Content-Type": "application/json"
-    }
-
-    # Smart URL Fixer & Resolution
-    video_url = req.videoUrl.strip()
-    
-    # If relative path, prepend current domain
-    current_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
-    domain_prefix = f"https://{current_domain}" if current_domain else "https://backenf-production.up.railway.app"
-    
-    if video_url.startswith("public/") or video_url.startswith("/public/"):
-        rel = video_url.lstrip("/")
-        video_url = f"{domain_prefix}/{rel}"
-    elif "localhost" in video_url or "127.0.0.1" in video_url:
-        if "public/" in video_url:
-            rel = "public/" + video_url.split("public/", 1)[1]
-            video_url = f"{domain_prefix}/{rel}"
-
-    cld_name = (getattr(req, "cloudinaryCloudName", None) or os.environ.get("CLOUDINARY_CLOUD_NAME") or "").strip()
-    cld_preset = (getattr(req, "cloudinaryUploadPreset", None) or os.environ.get("CLOUDINARY_UPLOAD_PRESET") or "").strip()
-
-    # If video_url is an endpoint (e.g. /api/render-download) or we have Cloudinary credentials, fetch, optimize, and upload to Cloudinary!
-    if "/api/render-download/" in video_url or not any(video_url.lower().split("?")[0].endswith(ext) for ext in [".mp4", ".mov", ".webm", ".m4v"]) or (cld_name and cld_preset and not video_url.startswith("https://res.cloudinary.com")):
-        try:
-            print(f"📥 Processing video from {video_url} for Buffer (Cloudinary: {bool(cld_name and cld_preset)})...", flush=True)
-            dl_res = requests.get(video_url, timeout=60, stream=True)
-            if dl_res.status_code == 200:
-                upload_id = str(uuid.uuid4())
-                public_dir = os.path.abspath("public")
-                task_dir = os.path.join(public_dir, f"buffer_{upload_id}")
-                os.makedirs(task_dir, exist_ok=True)
-                target_path = os.path.join(task_dir, "video.mp4")
-                with open(target_path, "wb") as f_out:
-                    for chunk in dl_res.iter_content(chunk_size=16384):
-                        if chunk:
-                            f_out.write(chunk)
-                    f_out.flush()
-                    os.fsync(f_out.fileno())
-                ensure_faststart_mp4(target_path)
-
-                if cld_name and cld_preset:
-                    cld_url = upload_to_cloudinary(target_path, cld_name, cld_preset)
-                    if cld_url:
-                        video_url = cld_url
-                        print(f"🌟 Successfully uploaded to Cloudinary: {video_url}", flush=True)
-
-                if not video_url.startswith("https://res.cloudinary.com"):
-                    video_url = f"{domain_prefix}/public/buffer_{upload_id}/video.mp4"
-                print(f"✅ Ready MP4 for Buffer: {video_url} ({os.path.getsize(target_path)} bytes)", flush=True)
-        except Exception as dl_err:
-            print(f"⚠️ Stream caching fallback warning: {dl_err}", flush=True)
-            
-    print(f"🚀 Buffer Create Post: final video URL = {video_url}", flush=True)
-
-    # Auto-resolve channelId if not supplied
-    channel_id = req.channelId
-    if not channel_id:
-        try:
-            ch_data = await buffer_get_channels({"apiKey": api_key})
-            channels = ch_data.get("channels", [])
-            for ch in channels:
-                if ch.get("service") == "tiktok":
-                    channel_id = ch.get("id")
-                    break
-                if not channel_id:
-                    channel_id = ch.get("id")
-        except Exception as err:
-            print(f"Auto-resolve channel failed: {err}", flush=True)
-
-    if not channel_id:
-        raise HTTPException(400, "لم يتم العثور على أي قناة مربوطة في حساب Buffer الخاص بك. يرجى ربط حساب TikTok في لوحة Buffer.")
-
-    if req.publishNow:
-        mode = "shareNow"
-    elif req.scheduledFor:
-        mode = "customScheduled"
-    else:
-        mode = "addToQueue"
-
-    input_payload = {
-        "channelId": channel_id,
-        "text": req.content or "#shorts #fyp #viral #rekaption",
-        "schedulingType": "automatic",
-        "mode": mode,
-        "assets": [
-            {
-                "video": {
-                    "url": video_url
-                }
-            }
-        ]
-    }
-
-    if req.scheduledFor and mode == "customScheduled":
-        input_payload["dueAt"] = req.scheduledFor
-
-    if req.saveToDraft:
-        input_payload["saveToDraft"] = True
-
-    create_mutation = """
-    mutation CreatePost($input: CreatePostInput!) {
-      createPost(input: $input) {
-        ... on PostActionSuccess {
-          post {
-            id
-            text
-            dueAt
-            status
-            assets {
-              id
-              mimeType
-              source
-            }
-          }
-        }
-        ... on MutationError {
-          message
-        }
-      }
-    }
-    """
-
-    # Warmup URL ping
-    try:
-        if video_url.startswith("http"):
-            requests.head(video_url, timeout=5)
-    except Exception:
-        pass
-
-    max_retries = 2
-    for attempt in range(1, max_retries + 1):
-        try:
-            print(f"🚀 Buffer createPost attempt {attempt}/{max_retries} with video URL: {video_url}", flush=True)
-            res = requests.post(
-                "https://api.buffer.com",
-                headers=headers,
-                json={
-                    "query": create_mutation,
-                    "variables": {"input": input_payload}
-                },
-                timeout=20
-            )
-            if res.status_code != 200:
-                raise HTTPException(res.status_code, f"Buffer API Error: {res.text}")
-
-            res_json = res.json()
-            print(f"Buffer GraphQL Raw Response (attempt {attempt}): {res_json}", flush=True)
-
-            if "errors" in res_json and not res_json.get("data"):
-                err_msg = res_json['errors'][0].get('message', '')
-                if ("thumbnail" in err_msg.lower() or "metadata" in err_msg.lower()) and "metadata" in input_payload["assets"][0]["video"]:
-                    input_payload["assets"][0]["video"].pop("metadata", None)
-                    continue
-                raise HTTPException(400, f"Buffer Error: {err_msg}")
-
-            create_result = res_json.get("data", {}).get("createPost", {})
-            if "message" in create_result and "post" not in create_result:
-                err_msg = create_result['message']
-                if "Video could not be read" in err_msg:
-                    if attempt < max_retries:
-                        time.sleep(2)
-                        continue
-                    raise HTTPException(400, "سيرفرات Buffer لم تتمكن من تنزيل الفيديو من الرابط المباشر. يرجى تفعيل سحابة Cloudinary (Cloud Name + Upload Preset) من الخانة المجاورة لضمان وصول Buffer للملف في ثانية واحدة بنسبة 100%.")
-
-                if ("thumbnail" in err_msg.lower() or "metadata" in err_msg.lower()) and "metadata" in input_payload["assets"][0]["video"]:
-                    input_payload["assets"][0]["video"].pop("metadata", None)
-                    continue
-
-                raise HTTPException(400, f"Buffer Mutation Error: {create_result['message']}")
-
-            # Succeeded!
-            action_msg = "تم نشر الفيديو فوراً على حسابك بنجاح!" if req.publishNow else ("تمت جدولة الفيديو في الموعد المحدد بنجاح!" if req.scheduledFor else "تمت إضافة الفيديو إلى طابور النشر (Queue) بنجاح!")
-            return {
-                "status": "success",
-                "message": action_msg,
-                "data": create_result
-            }
-        except HTTPException as he:
-            if attempt == max_retries:
-                raise he
-            time.sleep(2)
-        except Exception as e:
-            if attempt == max_retries:
-                raise HTTPException(500, f"Failed to post to Buffer: {str(e)}")
-            time.sleep(2)
-
-@app.post("/api/buffer/posts")
-async def buffer_get_posts(payload: dict):
-    api_key = payload.get("apiKey") or os.environ.get("BUFFER_API_KEY")
-    if not api_key:
-        raise HTTPException(400, "Buffer API Key is required.")
-
-    headers = {
-        "Authorization": f"Bearer {api_key.strip()}",
-        "Content-Type": "application/json"
-    }
-
-    try:
-        ch_info = await buffer_get_channels({"apiKey": api_key})
-        channels = ch_info.get("channels", [])
-        if not channels:
-            return {"posts": []}
-
-        org_id = payload.get("organizationId") or channels[0].get("organizationId")
-        if not org_id:
-            return {"posts": []}
-
-        channel_ids = [ch["id"] for ch in channels]
-        posts_query = """
-        query GetScheduledPosts($input: PostsInput!) {
-          posts(input: $input, first: 20) {
-            edges {
-              node {
-                id
-                text
-                status
-                dueAt
-                createdAt
-                channelId
-              }
-            }
-          }
-        }
-        """
-        res = requests.post(
-            "https://api.buffer.com",
-            headers=headers,
-            json={
-                "query": posts_query,
-                "variables": {
-                    "input": {
-                        "organizationId": org_id,
-                        "filter": {
-                            "channelIds": channel_ids
-                        }
-                    }
-                }
-            },
-            timeout=20
-        )
-        if res.status_code == 200:
-            data = res.json()
-            edges = data.get("data", {}).get("posts", {}).get("edges", [])
-            posts_list = [e.get("node") for e in edges if e.get("node")]
-            return {"posts": posts_list}
-        return {"posts": []}
-    except Exception as e:
-        print(f"Error fetching Buffer posts: {e}", flush=True)
-        return {"posts": []}
-
-# Serve public folder with explicit HEAD, GET, and Range streaming headers
+# Serve public folder for previewing uploaded media files
 public_dir_path = os.path.abspath("public")
 os.makedirs(public_dir_path, exist_ok=True)
-
-@app.api_route("/public/{file_path:path}", methods=["GET", "HEAD", "OPTIONS"])
-async def serve_public_media(file_path: str):
-    full_path = os.path.abspath(os.path.join(public_dir_path, file_path))
-    if not os.path.exists(full_path) or not full_path.startswith(public_dir_path):
-        raise HTTPException(status_code=404, detail="Media file not found")
-    
-    file_size = os.path.getsize(full_path)
-    file_ext = os.path.splitext(full_path)[1].lower()
-    media_type = "video/mp4" if file_ext == ".mp4" else ("audio/mpeg" if file_ext == ".mp3" else "application/octet-stream")
-    
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(file_size),
-        "Content-Type": media_type,
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-        "Access-Control-Allow-Headers": "*",
-        "Cache-Control": "public, max-age=604800",
-    }
-    
-    return FileResponse(
-        full_path,
-        media_type=media_type,
-        headers=headers
-    )
-
 app.mount("/public", StaticFiles(directory=public_dir_path), name="public")
 print(f"Successfully mounted public folder from {public_dir_path}")
 
