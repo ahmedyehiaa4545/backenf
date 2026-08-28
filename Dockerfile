@@ -49,6 +49,8 @@ RUN curl -fsSL -o /usr/local/bin/deep-filter https://github.com/Rikorose/DeepFil
 COPY requirements.txt .
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -U --pre "yt-dlp[default]" && \
+    pip install -U --no-cache-dir https://github.com/yt-dlp/yt-dlp/archive/refs/heads/master.tar.gz
 
 # Copy package.json and install npm dependencies
 COPY package.json ./
