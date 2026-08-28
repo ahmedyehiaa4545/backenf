@@ -2806,7 +2806,10 @@ def get_system_keys_api(token: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== Buffer Integration Proxy Endpoints ====================
+class BufferGraphQLProxyReq(BaseModel):
+    token: str
+    query: str
+    variables: dict = {}
 
 class BufferChannelsProxyReq(BaseModel):
     token: str
@@ -2814,25 +2817,43 @@ class BufferChannelsProxyReq(BaseModel):
 class BufferPublishProxyReq(BaseModel):
     token: str
     channel_id: str
-    text: str = ""
     video_url: str
-    scheduled_at: str | None = None
+    text: str
+    scheduled_at: str = None
     is_now: bool = True
+
+@app.post("/api/buffer/graphql")
+def buffer_graphql_proxy(req: BufferGraphQLProxyReq):
+    if not req.token:
+        raise HTTPException(status_code=400, detail="Buffer token is required")
+    try:
+        res = requests.post(
+            "https://api.buffer.com",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {req.token.strip()}"
+            },
+            json={"query": req.query, "variables": req.variables or {}},
+            timeout=30
+        )
+        return res.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/buffer/channels")
 def buffer_channels_proxy(req: BufferChannelsProxyReq):
     if not req.token:
         raise HTTPException(status_code=400, detail="Buffer token is required")
+    
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {req.token.strip()}"
     }
     
-    # Step 1: Query Organizations
+    # 1. Get Organizations
     org_query = """
-    query {
+    query GetOrganizations {
       account {
-        id
         organizations {
           id
           name
@@ -2841,21 +2862,17 @@ def buffer_channels_proxy(req: BufferChannelsProxyReq):
     }
     """
     try:
-        res = requests.post(
-            "https://api.buffer.com",
-            headers=headers,
-            json={"query": org_query},
-            timeout=25
-        )
+        res = requests.post("https://api.buffer.com", headers=headers, json={"query": org_query}, timeout=30)
         data = res.json()
         if "errors" in data and len(data["errors"]) > 0:
-            return {"channels": [], "error": data["errors"][0].get("message", "Buffer API error")}
-
+            err_msg = data["errors"][0].get("message", "Buffer API error")
+            return {"channels": [], "error": err_msg, "status": "error"}
+        
         orgs = data.get("data", {}).get("account", {}).get("organizations", [])
         if not orgs:
-            return {"channels": [], "error": "لم يتم العثور على أي منظمة في حساب Buffer."}
-
-        all_channels = []
+            return {"channels": [], "error": "No organizations found in Buffer account", "status": "empty"}
+        
+        # 2. Get Channels for each organization
         chan_query = """
         query GetChannels($input: ChannelsInput!) {
           channels(input: $input) {
@@ -2867,43 +2884,38 @@ def buffer_channels_proxy(req: BufferChannelsProxyReq):
           }
         }
         """
+        all_channels = []
         for org in orgs:
             org_id = org.get("id")
-            org_name = org.get("name", "Buffer Org")
             if not org_id:
                 continue
             c_res = requests.post(
                 "https://api.buffer.com",
                 headers=headers,
                 json={"query": chan_query, "variables": {"input": {"organizationId": org_id}}},
-                timeout=25
+                timeout=30
             )
             c_data = c_res.json()
             ch_list = c_data.get("data", {}).get("channels", [])
             for ch in ch_list:
                 all_channels.append({
                     "id": ch.get("id"),
-                    "name": ch.get("name") or ch.get("displayName") or "TikTok Channel",
+                    "name": ch.get("name") or ch.get("displayName") or "Channel",
                     "displayName": ch.get("displayName") or ch.get("name"),
                     "service": ch.get("service") or "tiktok",
                     "avatar": ch.get("avatar") or "",
-                    "organizationName": org_name
+                    "organizationName": org.get("name")
                 })
         
         return {"channels": all_channels, "status": "success"}
     except Exception as e:
-        return {"channels": [], "error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/buffer/publish")
 def buffer_publish_proxy(req: BufferPublishProxyReq):
     if not req.token or not req.channel_id or not req.video_url:
         raise HTTPException(status_code=400, detail="Missing required parameters")
     
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {req.token.strip()}"
-    }
-
     mutation = """
     mutation CreatePost($input: CreatePostInput!) {
       createPost(input: $input) {
@@ -2912,10 +2924,12 @@ def buffer_publish_proxy(req: BufferPublishProxyReq):
             id
             dueAt
             status
-            text
           }
         }
         ... on MutationError {
+          message
+        }
+        ... on UserError {
           message
         }
       }
@@ -2926,13 +2940,11 @@ def buffer_publish_proxy(req: BufferPublishProxyReq):
         "text": req.text,
         "schedulingType": "automatic",
         "mode": "shareNow" if req.is_now else "customScheduled",
-        "assets": [
-            {
-                "video": {
-                    "url": req.video_url
-                }
+        "assets": {
+            "video": {
+                "url": req.video_url
             }
-        ]
+        }
     }
     if not req.is_now and req.scheduled_at:
         input_payload["dueAt"] = req.scheduled_at
@@ -2940,7 +2952,10 @@ def buffer_publish_proxy(req: BufferPublishProxyReq):
     try:
         res = requests.post(
             "https://api.buffer.com",
-            headers=headers,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {req.token.strip()}"
+            },
             json={"query": mutation, "variables": {"input": input_payload}},
             timeout=30
         )
