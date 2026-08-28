@@ -2819,6 +2819,14 @@ class BufferPublishProxyReq(BaseModel):
     scheduled_at: str | None = None
     is_now: bool = True
 
+class BufferPostsProxyReq(BaseModel):
+    token: str
+    channel_ids: list[str] | None = None
+
+class BufferDeletePostProxyReq(BaseModel):
+    token: str
+    post_id: str
+
 @app.post("/api/buffer/channels")
 def buffer_channels_proxy(req: BufferChannelsProxyReq):
     token = req.token.strip()
@@ -2942,6 +2950,113 @@ def buffer_publish_proxy(req: BufferPublishProxyReq):
             return {"status": "error", "error": post_data["message"]}
         
         return {"status": "success", "post": post_data.get("post", {})}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/buffer/posts")
+def buffer_posts_proxy(req: BufferPostsProxyReq):
+    token = req.token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Buffer token is required")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+    try:
+        org_query = """
+        query GetOrganizations {
+          account {
+            organizations {
+              id
+            }
+          }
+        }
+        """
+        res = requests.post("https://api.buffer.com", headers=headers, json={"query": org_query}, timeout=20)
+        data = res.json()
+        orgs = data.get("data", {}).get("account", {}).get("organizations", [])
+        if not orgs:
+            return {"posts": [], "status": "success"}
+        
+        all_posts = []
+        for org in orgs:
+            org_id = org.get("id")
+            posts_query = f"""
+            query GetScheduledPosts {{
+              posts(
+                input: {{
+                  organizationId: "{org_id}"
+                  filter: {{ status: [scheduled] }}
+                }}
+                first: 50
+              ) {{
+                edges {{
+                  node {{
+                    id
+                    text
+                    dueAt
+                    status
+                    channelId
+                    assets {{
+                      id
+                      mimeType
+                      source
+                    }}
+                  }}
+                }}
+              }}
+            }}
+            """
+            pres = requests.post("https://api.buffer.com", headers=headers, json={"query": posts_query}, timeout=20)
+            pdata = pres.json()
+            edges = pdata.get("data", {}).get("posts", {}).get("edges", [])
+            for edge in edges:
+                node = edge.get("node", {})
+                if node:
+                    all_posts.append(node)
+                    
+        return {"posts": all_posts, "status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/buffer/delete-post")
+def buffer_delete_post_proxy(req: BufferDeletePostProxyReq):
+    token = req.token.strip()
+    post_id = req.post_id.strip()
+    if not token or not post_id:
+        raise HTTPException(status_code=400, detail="Buffer token and post_id are required")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+    mutation = """
+    mutation DeletePost($input: DeletePostInput!) {
+      deletePost(input: $input) {
+        ... on PostActionSuccess {
+          post {
+            id
+          }
+        }
+        ... on MutationError {
+          message
+        }
+      }
+    }
+    """
+    try:
+        res = requests.post(
+            "https://api.buffer.com",
+            headers=headers,
+            json={"query": mutation, "variables": {"input": {"id": post_id}}},
+            timeout=20
+        )
+        data = res.json()
+        if "errors" in data and len(data["errors"]) > 0:
+            return {"status": "error", "error": data["errors"][0].get("message", "Buffer API error")}
+        del_data = data.get("data", {}).get("deletePost", {})
+        if "message" in del_data:
+            return {"status": "error", "error": del_data["message"]}
+        return {"status": "success", "deleted_id": del_data.get("post", {}).get("id", post_id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
