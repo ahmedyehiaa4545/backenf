@@ -86,6 +86,7 @@ async def extract_and_encode_audio(input_path: str, task_dir: str) -> tuple[str,
     temp_audio_path = os.path.join(task_dir, "extracted_audio.mp3")
     ffmpeg_cmd = [
         "ffmpeg", "-y",
+        "-threads", "0",
         "-i", input_path,
         "-vn",
         "-ar", "16000",
@@ -2168,7 +2169,8 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             json.dump(request_data.model_dump(), f, ensure_ascii=False, indent=2)
             
         output_video_path = os.path.join(task_dir, "output.mp4")
-        print(f"[{task_id}] Rendering video with user edits (concurrency=4, max speed)...")
+        concurrency_val = str(max(4, os.cpu_count() or 4))
+        print(f"[{task_id}] Rendering video with user edits (concurrency={concurrency_val}, CRF=22, max speed)...")
         
         render_cmd = [
             "npx", "remotion", "render",
@@ -2176,10 +2178,12 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             "CaptionsVideo",
             output_video_path,
             "--props", props_path,
-            "--concurrency=4",
+            f"--concurrency={concurrency_val}",
+            "--crf=22",
+            "--pixel-format=yuv420p",
             "--gl=swangle",
-            "--offthreadvideo-cache-size-in-bytes=134217728",
-            "--jpeg-quality=75",
+            "--offthreadvideo-cache-size-in-bytes=268435456",
+            "--jpeg-quality=80",
             "--log=error",
             "--browser-args=--no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --disable-extensions --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-setuid-sandbox --js-flags=--max-old-space-size=4096"
         ]
@@ -2484,7 +2488,8 @@ async def generate_video(
             
         # 4. Render Video using Remotion CLI
         output_video_path = os.path.join(task_dir, "output.mp4")
-        print(f"[{task_id}] Rendering video...")
+        concurrency_val = str(max(4, os.cpu_count() or 4))
+        print(f"[{task_id}] Rendering video (concurrency={concurrency_val}, CRF=22)...")
         
         # Build rendering command
         render_cmd = [
@@ -2493,8 +2498,11 @@ async def generate_video(
             "CaptionsVideo",
             output_video_path,
             "--props", props_path,
-            "--concurrency=4",
-            "--browser-args=--no-sandbox"
+            f"--concurrency={concurrency_val}",
+            "--crf=22",
+            "--pixel-format=yuv420p",
+            "--jpeg-quality=80",
+            "--browser-args=--no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --disable-extensions"
         ]
         
         # Run the subprocess asynchronously
@@ -3032,10 +3040,11 @@ def buffer_delete_post_proxy(req: BufferDeletePostProxyReq):
     mutation = """
     mutation DeletePost($input: DeletePostInput!) {
       deletePost(input: $input) {
-        ... on PostActionSuccess {
-          post {
-            id
-          }
+        ... on DeletePostSuccess {
+          id
+        }
+        ... on VoidMutationError {
+          message
         }
         ... on MutationError {
           message
@@ -3056,7 +3065,9 @@ def buffer_delete_post_proxy(req: BufferDeletePostProxyReq):
         del_data = data.get("data", {}).get("deletePost", {})
         if "message" in del_data:
             return {"status": "error", "error": del_data["message"]}
-        return {"status": "success", "deleted_id": del_data.get("post", {}).get("id", post_id)}
+        if "id" in del_data:
+            return {"status": "success", "deleted_id": del_data["id"]}
+        return {"status": "success", "deleted_id": post_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
