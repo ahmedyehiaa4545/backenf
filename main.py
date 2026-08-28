@@ -86,7 +86,7 @@ async def extract_and_encode_audio(input_path: str, task_dir: str) -> tuple[str,
     temp_audio_path = os.path.join(task_dir, "extracted_audio.mp3")
     ffmpeg_cmd = [
         "ffmpeg", "-y",
-        "-threads", "0",
+        "-threads", "4",
         "-i", input_path,
         "-vn",
         "-ar", "16000",
@@ -2169,7 +2169,7 @@ async def run_render_task(task_id: str, request_data: RenderRequest):
             json.dump(request_data.model_dump(), f, ensure_ascii=False, indent=2)
             
         output_video_path = os.path.join(task_dir, "output.mp4")
-        concurrency_val = str(max(4, os.cpu_count() or 4))
+        concurrency_val = "4"
         print(f"[{task_id}] Rendering video with user edits (concurrency={concurrency_val}, CRF=22, max speed)...")
         
         render_cmd = [
@@ -2488,7 +2488,7 @@ async def generate_video(
             
         # 4. Render Video using Remotion CLI
         output_video_path = os.path.join(task_dir, "output.mp4")
-        concurrency_val = str(max(4, os.cpu_count() or 4))
+        concurrency_val = "4"
         print(f"[{task_id}] Rendering video (concurrency={concurrency_val}, CRF=22)...")
         
         # Build rendering command
