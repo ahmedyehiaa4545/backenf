@@ -11,6 +11,9 @@ from faster_whisper import WhisperModel
 from transcribe import chunk_words
 from fastapi.staticfiles import StaticFiles
 import sqlite3
+from typing import Optional, Dict, Any, List, Union
+from datetime import datetime
+import requests
 from pydantic import BaseModel
 
 app = FastAPI(title="ReKaption API", description="API for transcribing audio and rendering video with captions")
