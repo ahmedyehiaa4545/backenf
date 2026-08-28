@@ -2903,9 +2903,6 @@ def buffer_publish_proxy(req: BufferPublishProxyReq):
         ... on MutationError {
           message
         }
-        ... on UserError {
-          message
-        }
       }
     }
     """
